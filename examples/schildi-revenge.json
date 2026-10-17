@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "upstream": "SchildiChat/schildi-revenge",
+  "branch": "main",
+  "track": "both",
+  "author": {
+    "name": "dave",
+    "email": "git@d.monke.fail"
+  },
+  "required_paths": [
+    "nix/package.nix",
+    "nix/mkicns.py",
+    "deps-darwin.json"
+  ],
+  "protected_paths": [
+    "ci/**",
+    "nix/platforms.json"
+  ],
+  "matrix": [
+    {
+      "system": "aarch64-darwin",
+      "packages": [
+        "schildi-revenge"
+      ],
+      "checks": [
+        "schildi-revenge"
+      ],
+      "tests": []
+    },
+    {
+      "system": "x86_64-linux",
+      "packages": [
+        "schildi-revenge"
+      ],
+      "checks": [
+        "schildi-revenge"
+      ],
+      "tests": []
+    },
+    {
+      "system": "aarch64-linux",
+      "packages": [
+        "schildi-revenge"
+      ],
+      "checks": [
+        "schildi-revenge"
+      ],
+      "tests": []
+    }
+  ]
+}

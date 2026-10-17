@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "upstream": "guodaxia103/tabrix",
+  "branch": "main",
+  "track": "both",
+  "author": {
+    "name": "dave",
+    "email": "git@d.monke.fail"
+  },
+  "required_paths": [
+    "nix/modules/home-manager.nix",
+    "app/native-server/src/api-knowledge/live-observed-data.test.ts"
+  ],
+  "protected_paths": [
+    "ci/**",
+    "nix/platforms.json"
+  ],
+  "matrix": [
+    {
+      "system": "aarch64-darwin",
+      "packages": [
+        "tabrix",
+        "tabrix-extension"
+      ],
+      "checks": [
+        "tabrix",
+        "tabrix-extension"
+      ],
+      "tests": [
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "pnpm",
+          "install",
+          "--frozen-lockfile"
+        ],
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "pnpm",
+          "--filter",
+          "@tabrix/tabrix",
+          "test:ci"
+        ]
+      ]
+    },
+    {
+      "system": "x86_64-linux",
+      "packages": [
+        "tabrix",
+        "tabrix-extension"
+      ],
+      "checks": [
+        "tabrix",
+        "tabrix-extension"
+      ],
+      "tests": [
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "pnpm",
+          "install",
+          "--frozen-lockfile"
+        ],
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "pnpm",
+          "--filter",
+          "@tabrix/tabrix",
+          "test:ci"
+        ]
+      ]
+    },
+    {
+      "system": "aarch64-linux",
+      "packages": [
+        "tabrix",
+        "tabrix-extension"
+      ],
+      "checks": [
+        "tabrix",
+        "tabrix-extension"
+      ],
+      "tests": [
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "pnpm",
+          "install",
+          "--frozen-lockfile"
+        ],
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "pnpm",
+          "--filter",
+          "@tabrix/tabrix",
+          "test:ci"
+        ]
+      ]
+    }
+  ]
+}

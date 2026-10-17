@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+result
+outputs.txt
+attic-transfer/
+
+# Local operator artifacts
+/VALIDATION.json
+/PROVENANCE.json
+/provenance.json
+/FORK.json
+/UPSTREAM.json
+/.codex/
+/.cursor/
+/.claude/
+/chat-history/
+/chat-histories/
+/*.jsonl

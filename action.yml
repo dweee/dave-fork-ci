@@ -1,0 +1,48 @@
+name: Nix fork maintenance
+description: Prepare or promote a preserved-history upstream merge; execute no candidate code.
+inputs:
+  phase:
+    description: prepare or promote
+    required: true
+  target-branch:
+    description: Fork default branch
+    required: true
+  work-directory:
+    description: New private scratch directory; must not already exist
+    required: true
+  base:
+    description: Exact tested base revision for promotion
+    default: ''
+  candidate:
+    description: Exact tested candidate revision for promotion
+    default: ''
+outputs:
+  changed:
+    description: Whether a candidate was published
+    value: ${{ steps.run.outputs.changed }}
+  base:
+    description: Immutable base revision
+    value: ${{ steps.run.outputs.base }}
+  candidate:
+    description: Immutable candidate revision
+    value: ${{ steps.run.outputs.candidate }}
+  matrix:
+    description: Reviewed build platform matrix
+    value: ${{ steps.run.outputs.matrix }}
+  promoted:
+    description: Successfully promoted revision
+    value: ${{ steps.run.outputs.promoted }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        PHASE: ${{ inputs.phase }}
+        TARGET: ${{ inputs.target-branch }}
+        WORK: ${{ inputs.work-directory }}
+        BASE: ${{ inputs.base }}
+        CANDIDATE: ${{ inputs.candidate }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/bin/fork_ci.py" "$PHASE" \
+          --target "$TARGET" --work "$WORK" --base "$BASE" --candidate "$CANDIDATE"

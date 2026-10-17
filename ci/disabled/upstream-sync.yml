@@ -1,0 +1,218 @@
+name: Reusable Nix fork upstream sync
+on:
+  workflow_call:
+    inputs:
+      tool-repository:
+        description: Public GitHub owner/repo hosting this reusable action
+        required: true
+        type: string
+      tool-revision:
+        description: Exact reviewed 40-character commit of the same action release
+        required: true
+        type: string
+      auto-merge:
+        description: Promote a fully tested and cached candidate to the fork default branch
+        default: false
+        type: boolean
+      cache:
+        description: Publish all selected package closures before main promotion
+        default: true
+        type: boolean
+      attic-endpoint:
+        default: ''
+        type: string
+      attic-cache:
+        default: ''
+        type: string
+      max-closure-mib:
+        description: Uncompressed export limit for each platform
+        default: 2048
+        type: number
+    secrets:
+      ATTIC_TOKEN:
+        description: Write token scoped only to the chosen candidate cache
+        required: false
+    outputs:
+      candidate:
+        value: ${{ jobs.prepare.outputs.candidate }}
+      promoted:
+        value: ${{ jobs.promote.outputs.promoted }}
+
+permissions: {}
+concurrency:
+  group: fork-upstream-sync-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      vars.FORK_CI_ENABLED == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'repository_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      base: ${{ steps.sync.outputs.base }}
+      candidate: ${{ steps.sync.outputs.candidate }}
+      matrix: ${{ steps.sync.outputs.matrix }}
+    steps:
+      - name: Check immutable tool pin
+        env:
+          TOOL_REVISION: ${{ inputs.tool-revision }}
+        run: '[[ "$TOOL_REVISION" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ inputs.tool-repository }}
+          ref: ${{ inputs.tool-revision }}
+          path: controller
+          persist-credentials: false
+      - id: sync
+        uses: ./controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          phase: prepare
+          target-branch: ${{ github.event.repository.default_branch }}
+          work-directory: ${{ runner.temp }}/fork-prepare
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ inputs.tool-repository }}
+          ref: ${{ inputs.tool-revision }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.candidate }}
+          path: candidate
+          persist-credentials: false
+          submodules: recursive
+          fetch-depth: 0
+      - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+        with:
+          nix_version: '2.34.7'
+          nix_conf: |
+            accept-flake-config = false
+            substituters = https://cache.nixos.org
+      - name: Scan incoming history with trusted rules
+        env:
+          BASE: ${{ needs.prepare.outputs.base }}
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: |
+          scanner=$(nix build --no-link --print-out-paths --max-jobs 0 --builders '' \
+            --option accept-flake-config false --option substituters https://cache.nixos.org \
+            github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0#gitleaks)
+          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/scanner.toml"
+          mkdir -p "$RUNNER_TEMP/empty-ignore"
+          "$scanner/bin/gitleaks" git candidate --config "$RUNNER_TEMP/scanner.toml" \
+            --log-opts="$BASE..$CANDIDATE --no-ext-diff --no-textconv" \
+            --gitleaks-ignore-path "$RUNNER_TEMP/empty-ignore" --ignore-gitleaks-allow \
+            --redact=100 --no-banner --max-decode-depth=5 --max-archive-depth=3
+      - name: Build packages and run fork checks
+        env:
+          SYSTEM: ${{ matrix.system }}
+        run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt
+      - name: Export runtime closures as data
+        if: inputs.cache
+        env:
+          ATTIC_MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
+        run: python3 controller/ci/transfer-attic.py export --directory attic-transfer
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: inputs.cache
+        with:
+          name: fork-cache-${{ matrix.system }}-${{ needs.prepare.outputs.candidate }}
+          path: attic-transfer/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  cache:
+    needs: [prepare, build]
+    if: inputs.cache && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ inputs.tool-repository }}
+          ref: ${{ inputs.tool-revision }}
+          path: controller
+          persist-credentials: false
+      - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+        with:
+          nix_version: '2.34.7'
+          nix_conf: |
+            accept-flake-config = false
+            substituters = https://cache.nixos.org
+      - name: Install trusted Attic before importing untrusted closures
+        run: |
+          client=$(nix build --no-link --print-out-paths --max-jobs 0 --builders '' \
+            --option accept-flake-config false --option substituters https://cache.nixos.org \
+            github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0#attic-client)
+          echo "ATTIC_BIN=$client/bin/attic" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fork-cache-${{ matrix.system }}-${{ needs.prepare.outputs.candidate }}
+          path: attic-transfer
+      - name: Import data without running candidate programs
+        env:
+          ATTIC_MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
+        run: python3 controller/ci/transfer-attic.py import --directory attic-transfer
+      - name: Publish selected closures to candidate cache
+        env:
+          ATTIC_ENDPOINT: ${{ inputs.attic-endpoint }}
+          ATTIC_CACHE: ${{ inputs.attic-cache }}
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+        run: python3 controller/ci/push-attic.py --outputs attic-transfer/outputs.txt
+
+  promote:
+    needs: [prepare, build, cache]
+    if: >-
+      always() && !cancelled() && inputs.auto-merge &&
+      vars.FORK_CI_AUTO_MERGE == 'true' && needs.prepare.result == 'success' &&
+      needs.prepare.outputs.changed == 'true' && needs.build.result == 'success' &&
+      ((inputs.cache && needs.cache.result == 'success') ||
+       (!inputs.cache && needs.cache.result == 'skipped'))
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      promoted: ${{ steps.promote.outputs.promoted }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ inputs.tool-repository }}
+          ref: ${{ inputs.tool-revision }}
+          path: controller
+          persist-credentials: false
+      - id: promote
+        uses: ./controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          phase: promote
+          target-branch: ${{ github.event.repository.default_branch }}
+          work-directory: ${{ runner.temp }}/fork-promote
+          base: ${{ needs.prepare.outputs.base }}
+          candidate: ${{ needs.prepare.outputs.candidate }}

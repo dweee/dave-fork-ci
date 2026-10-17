@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "upstream": "karinushka/paneru",
+  "branch": "main",
+  "track": "both",
+  "author": {
+    "name": "dave",
+    "email": "git@d.monke.fail"
+  },
+  "required_paths": [
+    "nix/package.nix",
+    "src/config/swipe.rs",
+    "src/ecs/workspace.rs"
+  ],
+  "protected_paths": [
+    "ci/**",
+    "nix/platforms.json"
+  ],
+  "matrix": [
+    {
+      "system": "aarch64-darwin",
+      "packages": [
+        "paneru",
+        "paneru-lua"
+      ],
+      "checks": [
+        "darwin-module"
+      ],
+      "tests": [
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "cargo",
+          "fmt",
+          "--check"
+        ],
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "cargo",
+          "clippy",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        [
+          "nix",
+          "develop",
+          "--no-write-lock-file",
+          "--command",
+          "cargo",
+          "test",
+          "--locked",
+          "--all-targets"
+        ]
+      ]
+    }
+  ]
+}

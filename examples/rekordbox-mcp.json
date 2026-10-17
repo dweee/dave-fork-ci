@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "upstream": "davehenke/rekordbox-mcp",
+  "branch": "main",
+  "track": "both",
+  "author": {
+    "name": "dave",
+    "email": "git@d.monke.fail"
+  },
+  "required_paths": [
+    "nix/package.nix",
+    "tests/test_relink.py",
+    "nix/pyrekordbox/default.nix"
+  ],
+  "protected_paths": [
+    "ci/**",
+    "nix/platforms.json"
+  ],
+  "matrix": [
+    {
+      "system": "aarch64-darwin",
+      "packages": [
+        "rekordbox-mcp"
+      ],
+      "checks": [
+        "rekordbox-mcp"
+      ],
+      "tests": []
+    }
+  ]
+}
