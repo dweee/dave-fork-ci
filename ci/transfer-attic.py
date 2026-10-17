@@ -75,6 +75,12 @@ def transfer(mode, directory, limit):
             if process.wait():
                 raise ValueError("Closure import failed")
             subprocess.run(["nix-store", "--check-validity", *paths], check=True)
+            # The export/import format drops signatures. Restore them only
+            # from the official cache so Attic can skip its existing outputs.
+            # Builder-supplied metadata never decides which paths to skip.
+            subprocess.run(["nix", "store", "copy-sigs", "--substituter",
+                            "https://cache.nixos.org", "--recursive", *paths],
+                           check=True, timeout=120)
         finally:
             if process.poll() is None:
                 process.kill()
