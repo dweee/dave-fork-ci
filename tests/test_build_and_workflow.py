@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -16,6 +17,14 @@ build = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(build)
 
 
+def fail_command(prefix):
+    def run(args, **kwargs):
+        if args[:len(prefix)] == prefix:
+            raise subprocess.CalledProcessError(1, args)
+        return subprocess.CompletedProcess(args, 0)
+    return run
+
+
 class BuildAndWorkflowTests(unittest.TestCase):
     def test_build_uses_explicit_system_and_disables_flake_cache_settings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -25,7 +34,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
             argv = ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]
             path = '/nix/store/' + 'a' * 32 + '-package'
             with patch.object(sys, 'argv', argv), patch.dict(os.environ, {}, clear=True), \
-                 patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else json.dumps([{'outputs': {'out': path}}]).encode()) as call, patch.object(build.subprocess, 'run'):
+                 patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else json.dumps([{'outputs': {'out': path}}]).encode()) as call, patch.object(build.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 build.main()
             args = call.call_args_list[1].args[0]
             self.assertIn('.#packages.x86_64-linux.default', args)
@@ -56,7 +65,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
             with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
                  patch.dict(os.environ, {}, clear=True), \
                  patch.object(build.subprocess, 'check_output', return_value=b'[{"outputs":{"out":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package"}}]'), \
-                 patch.object(build.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['regression-check'])):
+                 patch.object(build.subprocess, 'run', side_effect=fail_command(['regression-check'])):
                 with self.assertRaises(subprocess.CalledProcessError):
                     build.main()
             self.assertFalse(outputs.exists())
@@ -70,7 +79,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
             with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
                  patch.dict(os.environ, {}, clear=True), \
                  patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else b'[{"outputs":{"out":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package"}}]'), \
-                 patch.object(build.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['git', 'diff'])):
+                 patch.object(build.subprocess, 'run', side_effect=fail_command(['git', 'diff'])):
                 with self.assertRaises(subprocess.CalledProcessError):
                     build.main()
             self.assertFalse(outputs.exists())
