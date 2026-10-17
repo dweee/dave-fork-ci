@@ -2,7 +2,7 @@
 
 Reusable upstream maintenance for GitHub forks with Nix packaging and local changes.
 
-The composite [action.yml](action.yml) handles Git preparation/promotion without executing candidate code. The reusable [workflow draft](ci/disabled/upstream-sync.yml) connects it to isolated native builds, checks and Attic publication. A small generated caller is the only workflow each consuming fork needs.
+The composite [action.yml](action.yml) handles Git preparation/promotion without executing candidate code. The reusable [reusable workflow](.github/workflows/upstream-sync.yml) connects it to isolated native builds, checks and Attic publication. A small generated caller is the only workflow each consuming fork needs.
 
 ## Behavior
 
@@ -12,7 +12,7 @@ The composite [action.yml](action.yml) handles Git preparation/promotion without
 4. After **every build row succeeds**, export only the selected runtime closures. Fresh Linux publisher jobs install a trusted pinned Attic client before importing NAR data and then upload to a cache-scoped candidate cache. Darwin packages can be uploaded from Linux without running them.
 5. After every required cache upload succeeds, a fresh Git-only job checks the candidate SHA, ancestry, protected paths and current main. It then makes a normal fast-forward push to the fork's default branch. There is no force push, branch-protection bypass, package rebuild or candidate-script execution in this job. Cache failure prevents main promotion. Successful earlier cache rows may remain in the isolated candidate cache if a later row fails.
 
-When `cache: false` is explicitly selected, builds/checks remain mandatory and cache publication is skipped. Automatic promotion additionally requires both `auto-merge: true` and repository variable `FORK_CI_AUTO_MERGE=true`. The entire workflow also requires `FORK_CI_ENABLED=true`. Workflow drafts remain inactive under `ci/disabled/` until installed and configured.
+When `cache: false` is explicitly selected, builds/checks remain mandatory and cache publication is skipped. Automatic promotion additionally requires both `auto-merge: true` and repository variable `FORK_CI_AUTO_MERGE=true`. The entire workflow also requires `FORK_CI_ENABLED=true`. The reusable workflow is installed; consumers explicitly enable it using those variables.
 
 Builds reject lockfile updates, and tracked source/submodule changes or a changed Git HEAD during tests prevent a success manifest. Upstream dependency/hash changes that need packaging repair remain a review candidate; the workflow does not test an implicitly edited tree and then promote a different commit.
 
@@ -20,7 +20,7 @@ Builds reject lockfile updates, and tracked source/submodule changes or a change
 
 This tool manages the GitHub fork's default branch. Importing its outputs or updating downstream lockfiles is a separate integration step.
 
-Publish a reviewed release of the controller repository. Put `ci/disabled/upstream-sync.yml` at `.github/workflows/upstream-sync.yml` in that release. A reusable workflow must be under `.github/workflows` to be callable.
+Publish a reviewed release of the controller repository. A reusable workflow must be under `.github/workflows` to be callable.
 
 In each approved public fork, add a reviewed `.fork-ci.json` based on [the example policies](examples). Configure upstream, tracking mode, Git author, required custom files, native package/check attributes and regression tests that actually prove your changes. `required_paths` detects removal, not semantic correctness: tests must establish behavior. A passing package build alone is not a security review, and some package recipes deliberately disable tests. The examples are adoption drafts, not evidence of successful application builds.
 
@@ -61,9 +61,11 @@ Do not run this on persistent self-hosted workers: build/dependency code can mod
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 PYTHONDONTWRITEBYTECODE=1 python3 ci/test-push-attic.py
 PYTHONDONTWRITEBYTECODE=1 python3 ci/test-transfer-attic.py
-actionlint -shellcheck= -pyflakes= ci/disabled/upstream-sync.yml
+actionlint -shellcheck= -pyflakes= .github/workflows/upstream-sync.yml
 ```
 
 Tests include real local HTTP Git repositories for prepare → immutable candidate → promotion → unchanged/no-op, stable release publication over already merged source, rewound upstreams, conflicts, protected files, preserved history, explicit authorship and stale-main rejection. Local tests cannot prove GitHub permissions, hosted runner behavior, branch rules, cost or authenticated Attic uploads. Those remain unverified until the supervised pilot.
 
 Reference: [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows), [event behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), [workflow security](https://docs.github.com/en/actions/reference/security/secure-use).
+
+Every successful candidate build retains a Nix closure archive for one day, independently of Attic publication.

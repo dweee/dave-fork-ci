@@ -85,7 +85,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
             self.assertFalse(outputs.exists())
 
     def test_workflow_keeps_write_and_upload_credentials_out_of_build_job(self):
-        source = (ROOT / 'ci/disabled/upstream-sync.yml').read_text()
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
         build_job = source.split('\n  build:', 1)[1].split('\n  cache:', 1)[0]
         self.assertNotIn('secrets.', build_job)
         self.assertNotIn('contents: write', build_job)
@@ -101,7 +101,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
 
     def test_all_external_actions_are_pinned(self):
         import re
-        source = (ROOT / 'ci/disabled/upstream-sync.yml').read_text()
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
         for reference in re.findall(r'uses: (\S+)', source):
             if not reference.startswith('./'):
                 self.assertRegex(reference, r'@[0-9a-f]{40}$')

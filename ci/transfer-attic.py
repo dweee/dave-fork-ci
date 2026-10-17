@@ -2,6 +2,8 @@
 """Transfer selected Nix outputs between disposable jobs without running them."""
 import argparse
 import gzip
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -47,6 +49,15 @@ def transfer(mode, directory, limit):
             if process.wait():
                 raise ValueError("Closure export failed")
             manifest.write_text("\n".join(paths) + "\n")
+            archive_path = directory / "closure.nar.gz"
+            digest = hashlib.sha256()
+            with archive_path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+            (directory / "SHA256SUMS").write_text(digest.hexdigest() + "  closure.nar.gz\n")
+            with (directory / "closure-info.json").open("w") as stream:
+                subprocess.run(["nix", "path-info", "--json", "--recursive", *paths], stdout=stream, check=True)
+
         finally:
             if process.poll() is None:
                 process.kill()

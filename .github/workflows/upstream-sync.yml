@@ -26,7 +26,7 @@ on:
         type: string
       max-closure-mib:
         description: Uncompressed export limit for each platform
-        default: 2048
+        default: 4096
         type: number
     secrets:
       ATTIC_TOKEN:
@@ -128,12 +128,10 @@ jobs:
           SYSTEM: ${{ matrix.system }}
         run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt
       - name: Export runtime closures as data
-        if: inputs.cache
         env:
           ATTIC_MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
         run: python3 controller/ci/transfer-attic.py export --directory attic-transfer
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: inputs.cache
         with:
           name: fork-cache-${{ matrix.system }}-${{ needs.prepare.outputs.candidate }}
           path: attic-transfer/
