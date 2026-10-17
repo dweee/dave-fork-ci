@@ -51,6 +51,11 @@ Package builds and Nix development-shell tests may read this public cache withou
 an upload token. Trusted scanner and publisher-client installation still uses only
 the official Nix cache, before any candidate code or runtime closure is imported.
 
+The `cache-http2` input defaults to true. Set repository variable `ATTIC_HTTP2=false`
+with the generated caller to select HTTPS over HTTP/1.1 when a cache's streaming
+proxy cannot reliably serve HTTP/2 downloads. Certificate and Nix signature checks
+remain enabled.
+
 Enable `FORK_CI_ENABLED` for a supervised candidate-only run first; leave `FORK_CI_AUTO_MERGE` unset. Measure real cold/warm minutes, disk and artifact sizes. Closure exports default to a 2 GiB uncompressed limit per platform, configurable up to 4 GiB. Artifacts expire after one day. Test a real upload and independent consumer substitution. Once those pass and dependency/security findings are resolved, configure the repository's branch rules for the intended repository-scoped actor and enable `FORK_CI_AUTO_MERGE`. The action respects existing rules and fails if a direct push is forbidden; it does not modify them or request a bypass token.
 
 `GITHUB_TOKEN` pushes normally do not trigger further push workflows. All required validation therefore runs in this same workflow before promotion; no unobserved downstream workflow is assumed. This action does not create GitHub releases or publish release binaries. GitHub may delay scheduled jobs or disable schedules in inactive public repositories, so this is polling, not a guaranteed immediate event subscription.

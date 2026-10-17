@@ -21,6 +21,9 @@ def public_cache(env):
     key = env.get('ATTIC_PUBLIC_KEY', '')
     if not endpoint and not key:
         return ''
+    http2 = env.get('ATTIC_HTTP2', 'true')
+    if http2 not in ('true', 'false'):
+        raise Blocked('Cache HTTP/2 setting must be true or false')
     try:
         parsed = urlsplit(endpoint)
         _ = parsed.port
@@ -42,7 +45,8 @@ def public_cache(env):
     # are validated before putting them into the line-oriented Nix config.
     env['NIX_CONFIG'] = (env.get('NIX_CONFIG', '') + '\naccept-flake-config = false\n'
                          + 'extra-substituters = ' + endpoint + '\n'
-                         + 'extra-trusted-public-keys = ' + key + '\n')
+                         + 'extra-trusted-public-keys = ' + key + '\n'
+                         + 'http2 = ' + http2 + '\n')
     return endpoint
 
 
@@ -64,6 +68,8 @@ def main():
              '--option', 'accept-flake-config', 'false', '--option', 'builders', '',
              '--option', 'substituters', 'https://cache.nixos.org',
              '--option', 'extra-substituters', substituter]
+    if substituter:
+        flags += ['--option', 'http2', env.get('ATTIC_HTTP2', 'true')]
     packages = ['.#packages.' + args.system + '.' + name for name in row['packages']]
     result = subprocess.check_output(['nix', 'build', '--no-link', '--json', *flags, *packages],
                                      cwd=args.source, env=env)

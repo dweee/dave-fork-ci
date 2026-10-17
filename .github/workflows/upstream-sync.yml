@@ -32,6 +32,10 @@ on:
         description: Public Nix verification key for the build cache
         default: ''
         type: string
+      cache-http2:
+        description: Use HTTP/2 when reading the public cache; false selects HTTPS over HTTP/1.1
+        default: true
+        type: boolean
       max-closure-mib:
         description: Uncompressed export limit for each platform
         default: 4096
@@ -136,6 +140,7 @@ jobs:
           SYSTEM: ${{ matrix.system }}
           ATTIC_SUBSTITUTER: ${{ inputs.attic-substituter }}
           ATTIC_PUBLIC_KEY: ${{ inputs.attic-public-key }}
+          ATTIC_HTTP2: ${{ inputs.cache-http2 }}
         run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt
       - name: Export runtime closures as data
         env:

@@ -36,16 +36,25 @@ class BuildAndWorkflowTests(unittest.TestCase):
             outputs = root / 'outputs.txt'
             path = '/nix/store/' + 'a' * 32 + '-package'
             with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
-                 patch.dict(os.environ, {'ATTIC_SUBSTITUTER': endpoint, 'ATTIC_PUBLIC_KEY': key}, clear=True), \
+                 patch.dict(os.environ, {'ATTIC_SUBSTITUTER': endpoint, 'ATTIC_PUBLIC_KEY': key, 'ATTIC_HTTP2': 'false'}, clear=True), \
                  patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else json.dumps([{'outputs': {'out': path}}]).encode()) as call, \
                  patch.object(build.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 build.main()
             args = call.call_args_list[1].args[0]
             self.assertEqual(args[args.index('extra-substituters') + 1], endpoint)
+            self.assertEqual(args[args.index('http2') + 1], 'false')
             env = call.call_args_list[1].kwargs['env']
             self.assertIn('extra-substituters = ' + endpoint, env['NIX_CONFIG'])
             self.assertIn('extra-trusted-public-keys = ' + key, env['NIX_CONFIG'])
+            self.assertIn('http2 = false', env['NIX_CONFIG'])
             self.assertNotIn('ATTIC_TOKEN', env)
+
+    def test_cache_transport_setting_rejects_configuration_injection(self):
+        key = 'packages:' + base64.b64encode(bytes(range(32))).decode()
+        for value in ['false\nrequire-sigs = false', '', '0', 'invalid']:
+            with self.subTest(value=value), self.assertRaises(fork_ci.Blocked):
+                build.public_cache({'ATTIC_SUBSTITUTER': 'https://cache.example.org',
+                                    'ATTIC_PUBLIC_KEY': key, 'ATTIC_HTTP2': value})
 
     def test_invalid_public_cache_settings_cannot_inject_nix_configuration(self):
         endpoint = 'https://cache.example.org/packages'

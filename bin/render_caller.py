@@ -30,6 +30,7 @@ jobs:
       attic-cache: ${{ vars.ATTIC_CACHE }}
       attic-substituter: ${{ vars.ATTIC_SUBSTITUTER }}
       attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY }}
+      cache-http2: ${{ vars.ATTIC_HTTP2 != 'false' }}
     secrets:
       ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
 '''.replace('REPOSITORY', repository).replace('REVISION', revision)
