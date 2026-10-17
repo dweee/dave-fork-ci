@@ -102,17 +102,31 @@ def validate_policy(policy):
     return policy
 
 
+class NoMetadataRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        # Authorization belongs only to the API origin, including on redirects.
+        raise Blocked('GitHub metadata redirect requires review')
+
+
 def api(endpoint):
-    request = urllib.request.Request('https://api.github.com/' + endpoint,
-                                     headers={'Accept': 'application/vnd.github+json',
-                                              'User-Agent': 'dave-fork-ci'})
+    if not re.fullmatch(r'repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/latest', endpoint):
+        raise Blocked('Invalid public release metadata endpoint')
+    headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'dave-fork-ci'}
+    token = os.environ.get('GH_TOKEN')
+    if token:
+        if any(c.isspace() or ord(c) < 32 for c in token):
+            raise Blocked('Invalid GitHub job token')
+        headers['Authorization'] = 'Bearer ' + token
+    request = urllib.request.Request('https://api.github.com/' + endpoint, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.build_opener(NoMetadataRedirect()).open(request, timeout=30) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return None
         raise Blocked('Public GitHub metadata unavailable or rate limited') from None
+    except urllib.error.URLError:
+        raise Blocked('Public GitHub metadata unavailable') from None
 
 
 def latest_release(repository):

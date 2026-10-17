@@ -1,4 +1,5 @@
 import copy
+import io
 import importlib.util
 import json
 import os
@@ -144,6 +145,43 @@ class PolicyTests(unittest.TestCase):
     def test_tag_metacharacters_are_rejected(self):
         with self.assertRaises(ci.Blocked):
             ci.ref('bad tag\nextra-output=true')
+
+
+class MetadataTests(unittest.TestCase):
+    def test_release_metadata_uses_job_token_only_at_fixed_api_origin(self):
+        response = io.BytesIO(b'{"id": 1}')
+        with patch.dict(os.environ, {'GH_TOKEN': 'synthetic-job-token'}), patch.object(ci.urllib.request, 'build_opener') as build:
+            build.return_value.open.return_value = response
+            self.assertEqual(ci.api('repos/example/project/releases/latest'), {'id': 1})
+            request = build.return_value.open.call_args.args[0]
+            self.assertEqual(request.full_url, 'https://api.github.com/repos/example/project/releases/latest')
+            self.assertEqual(request.get_header('Authorization'), 'Bearer synthetic-job-token')
+            self.assertIsInstance(build.call_args.args[0], ci.NoMetadataRedirect)
+
+    def test_release_metadata_refuses_endpoint_escape_before_network_access(self):
+        with patch.object(ci.urllib.request, 'build_opener') as build:
+            for endpoint in ['https://elsewhere.invalid', '//elsewhere.invalid', 'repos/example/project/releases/latest?extra=1', 'repos/example/project/releases/latest/../secrets']:
+                with self.assertRaises(ci.Blocked):
+                    ci.api(endpoint)
+            build.assert_not_called()
+
+    def test_metadata_redirect_cannot_forward_authorization(self):
+        request = ci.urllib.request.Request('https://api.github.com/repos/example/project/releases/latest', headers={'Authorization': 'Bearer synthetic-job-token'})
+        with self.assertRaisesRegex(ci.Blocked, 'redirect requires review'):
+            ci.NoMetadataRedirect().redirect_request(request, None, 302, 'redirect', {}, 'https://elsewhere.invalid')
+
+    def test_metadata_http_failure_never_exposes_token_or_error_body(self):
+        failure = ci.urllib.error.HTTPError('https://api.github.com/', 403, 'synthetic-job-token', {}, None)
+        with patch.object(ci.urllib.request, 'build_opener') as build:
+            build.return_value.open.side_effect = failure
+            with self.assertRaises(ci.Blocked) as result:
+                ci.api('repos/example/project/releases/latest')
+            self.assertNotIn('synthetic-job-token', str(result.exception))
+
+    def test_metadata_404_still_means_no_release(self):
+        with patch.object(ci.urllib.request, 'build_opener') as build:
+            build.return_value.open.side_effect = ci.urllib.error.HTTPError('https://api.github.com/', 404, 'missing', {}, None)
+            self.assertIsNone(ci.api('repos/example/project/releases/latest'))
 
 
 if __name__ == '__main__':
