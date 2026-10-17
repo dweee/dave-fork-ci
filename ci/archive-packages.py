@@ -35,6 +35,18 @@ def digest(path):
     return result.hexdigest()
 
 
+def create_release(repository, branch, run, tag):
+    # GitHub requires workflow-write authority to tag an older commit whose
+    # workflows differ from the current default branch. Backup tags identify
+    # archive publication; the run and asset names identify the built source.
+    gh('release', 'create', tag, '--repo', repository, '--target', branch, '--prerelease',
+       '--title', 'Package backups: ' + run['head_sha'][:12] + ' (run ' + str(run['id']) + ')',
+       '--notes', 'Nix runtime-closure archives from ' + run['html_url'] + '. Built source: ' + run['head_sha']
+       + '. The backup tag marks the default branch at archive publication, not the built source revision. '
+       'Successful package outputs are retained even if another build or Attic upload fails. Each ZIP contains '
+       'a gzip Nix export, output roots and checksums. These are data archives, not installers.')
+
+
 def chunks(path, size=PART_SIZE):
     if path.stat().st_size <= size:
         yield path
@@ -76,9 +88,7 @@ def main():
         return
     tag = 'packages-' + run_id
     if subprocess.run(['gh', 'release', 'view', tag, '--repo', repository], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
-        gh('release', 'create', tag, '--repo', repository, '--target', run['head_sha'], '--prerelease',
-           '--title', 'Package backups: ' + run['head_sha'][:12] + ' (run ' + run_id + ')',
-           '--notes', 'Nix runtime-closure archives from ' + run['html_url'] + '. Successful package outputs are retained even if another build or Attic upload fails. Each ZIP contains a gzip Nix export, output roots and checksums. These are data archives, not installers.')
+        create_release(repository, branch, run, tag)
     for item in artifacts:
         if not 0 < item['size_in_bytes'] <= MAX_ARCHIVE:
             raise ValueError('Package archive exceeds the transfer limit')

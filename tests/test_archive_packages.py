@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('archive', Path(__file__).resolve().parents[1] / 'ci/archive-packages.py')
 archive = importlib.util.module_from_spec(spec)
@@ -9,6 +10,17 @@ spec.loader.exec_module(archive)
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_old_run_backup_does_not_request_workflow_write_authority(self):
+        run = {'head_sha': 'a' * 40, 'id': 42, 'html_url': 'https://example.test/runs/42'}
+        with patch.object(archive, 'gh') as call:
+            archive.create_release('example/fork', 'main', run, 'packages-42')
+        args = call.call_args.args
+        self.assertEqual(args[args.index('--target') + 1], 'main')
+        notes = args[args.index('--notes') + 1]
+        self.assertIn(run['head_sha'], notes)
+        self.assertIn(run['html_url'], notes)
+        self.assertIn('not the built source revision', notes)
+
     def test_untrusted_run_cannot_publish_release_assets(self):
         good = {'repository': {'full_name': 'example/fork'}, 'head_repository': {'full_name': 'example/fork'},
                 'event': 'push', 'head_branch': 'main', 'head_sha': 'a' * 40}
