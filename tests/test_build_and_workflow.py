@@ -25,10 +25,12 @@ class BuildAndWorkflowTests(unittest.TestCase):
             argv = ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]
             path = '/nix/store/' + 'a' * 32 + '-package'
             with patch.object(sys, 'argv', argv), patch.dict(os.environ, {}, clear=True), \
-                 patch.object(build.subprocess, 'check_output', return_value=json.dumps([{'outputs': {'out': path}}]).encode()) as call:
+                 patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else json.dumps([{'outputs': {'out': path}}]).encode()) as call, patch.object(build.subprocess, 'run'):
                 build.main()
-            args = call.call_args.args[0]
+            args = call.call_args_list[1].args[0]
             self.assertIn('.#packages.x86_64-linux.default', args)
+            self.assertIn('--no-update-lock-file', args)
+            self.assertIn('--no-write-lock-file', args)
             self.assertIn('accept-flake-config', args)
             self.assertEqual(args[args.index('accept-flake-config') + 1], 'false')
             self.assertEqual(outputs.read_text(), path + '\n')
@@ -55,6 +57,20 @@ class BuildAndWorkflowTests(unittest.TestCase):
                  patch.dict(os.environ, {}, clear=True), \
                  patch.object(build.subprocess, 'check_output', return_value=b'[{"outputs":{"out":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package"}}]'), \
                  patch.object(build.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['regression-check'])):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    build.main()
+            self.assertFalse(outputs.exists())
+
+    def test_tracked_source_mutation_never_writes_success_manifest(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.fork-ci.json').write_text(json.dumps(POLICY))
+            outputs = root / 'outputs.txt'
+            with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else b'[{"outputs":{"out":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package"}}]'), \
+                 patch.object(build.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['git', 'diff'])):
                 with self.assertRaises(subprocess.CalledProcessError):
                     build.main()
             self.assertFalse(outputs.exists())

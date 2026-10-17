@@ -23,7 +23,9 @@ def main():
            ['GH_TOKEN', 'GITHUB_TOKEN', 'ATTIC_TOKEN', 'SSH_AUTH_SOCK']}
     if os.environ.get('ATTIC_TOKEN') or os.environ.get('GH_TOKEN'):
         raise Blocked('Build jobs must not receive publication credentials')
-    flags = ['--option', 'accept-flake-config', 'false', '--option', 'builders', '',
+    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.source, env=env).strip()
+    flags = ['--no-update-lock-file', '--no-write-lock-file',
+             '--option', 'accept-flake-config', 'false', '--option', 'builders', '',
              '--option', 'substituters', 'https://cache.nixos.org',
              '--option', 'extra-substituters', '']
     packages = ['.#packages.' + args.system + '.' + name for name in row['packages']]
@@ -36,6 +38,10 @@ def main():
                        cwd=args.source, env=env, check=True)
     for command in row.get('tests', []):
         subprocess.run(command, cwd=args.source, env=env, check=True)
+    if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.source, env=env).strip() != head:
+        raise Blocked('Tests changed the candidate revision')
+    subprocess.run(['git', 'diff', '--no-ext-diff', '--no-textconv', '--exit-code', 'HEAD', '--ignore-submodules=none', '--'],
+                   cwd=args.source, env=env, check=True)
     args.outputs.write_text('\n'.join(roots) + '\n')
     print('All selected package builds, checks and test commands passed.')
 
