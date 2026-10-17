@@ -122,6 +122,7 @@ def api(endpoint):
         with urllib.request.build_opener(NoMetadataRedirect()).open(request, timeout=30) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
+        error.close()
         if error.code == 404:
             return None
         raise Blocked('Public GitHub metadata unavailable or rate limited') from None

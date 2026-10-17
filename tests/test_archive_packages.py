@@ -43,6 +43,16 @@ class ArchiveTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 archive.validate_run(bad, 'example/fork', 'main')
 
+    def test_scheduled_and_dispatched_upstream_archives_require_same_repo_and_default_branch(self):
+        good = {'repository': {'full_name': 'example/fork'}, 'head_repository': {'full_name': 'example/fork'},
+                'head_branch': 'main', 'head_sha': 'a' * 40}
+        for event in ['schedule', 'repository_dispatch']:
+            archive.validate_run(good | {'event': event}, 'example/fork', 'main')
+            for change in [{'head_branch': 'candidate'}, {'head_repository': {'full_name': 'other/fork'}},
+                           {'repository': {'full_name': 'other/fork'}}]:
+                with self.subTest(event=event, change=change), self.assertRaises(ValueError):
+                    archive.validate_run(good | {'event': event} | change, 'example/fork', 'main')
+
     def test_large_archive_splits_round_trip_without_executing_it(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'archive.zip'

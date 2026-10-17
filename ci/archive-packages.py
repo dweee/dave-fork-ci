@@ -21,10 +21,10 @@ def gh(*args):
 def validate_run(data, repository, branch):
     if (data.get('repository', {}).get('full_name') != repository
             or data.get('head_repository', {}).get('full_name') != repository
-            or data.get('event') not in ('push', 'workflow_dispatch')
+            or data.get('event') not in ('push', 'workflow_dispatch', 'schedule', 'repository_dispatch')
             or data.get('head_branch') != branch
             or not re.fullmatch('[0-9a-f]{40}', data.get('head_sha', ''))):
-        raise ValueError('Only trusted default-branch push/manual runs may publish backups')
+        raise ValueError('Only trusted default-branch native or upstream runs may publish backups')
 
 
 def digest(path):
