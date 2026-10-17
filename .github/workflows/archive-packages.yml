@@ -1,0 +1,33 @@
+name: Preserve package archives
+on:
+  workflow_call:
+    inputs:
+      run-id:
+        required: true
+        type: string
+      tool-revision:
+        required: true
+        type: string
+permissions: {}
+concurrency:
+  group: package-backup-${{ github.repository }}-${{ inputs.run-id }}
+  cancel-in-progress: false
+jobs:
+  archive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: dweee/dave-fork-ci
+          ref: ${{ inputs.tool-revision }}
+          persist-credentials: false
+      - name: Preserve data archives independently of Attic
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.run-id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python3 ci/archive-packages.py
