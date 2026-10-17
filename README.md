@@ -24,6 +24,16 @@ Publish a reviewed release of the controller repository. Put `ci/disabled/upstre
 
 In each approved public fork, add a reviewed `.fork-ci.json` based on [the example policies](examples). Configure upstream, tracking mode, Git author, required custom files, native package/check attributes and regression tests that actually prove your changes. `required_paths` detects removal, not semantic correctness: tests must establish behavior. A passing package build alone is not a security review, and some package recipes deliberately disable tests. The examples are adoption drafts, not evidence of successful application builds.
 
+For a fork whose upstream history contains private agent artifacts, configure
+`history_exclude` as a list of literal repository-relative paths, such as
+`[".claude", ".omx"]`. Apply the same filter to the initial imported history.
+The controller deterministically filters incoming history before merging and
+verifies that mapping again before promotion. Authors, dates, messages and source
+changes remain; affected commit IDs change and invalidated signatures are removed.
+Excluded files never enter the published candidate ancestry. Control files and
+required source paths cannot be excluded. Changing the filter requires local
+review and rebuilding the fork's filtered baseline.
+
 Generate a staged caller with the actual published action repository and its exact release commit:
 
 ```sh

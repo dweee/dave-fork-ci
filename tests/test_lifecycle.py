@@ -66,6 +66,28 @@ class LifecycleTests(fixtures.MergeTests):
                    work=Path(self.tmp.name) / 'promote', base=outputs['base'], candidate=outputs['candidate']))
         self.assertEqual(self.prepare('second'), {'changed': 'false'})
 
+    def test_filtered_history_promotes_without_reintroducing_upstream_artifacts(self):
+        ci.git(self.repo, 'checkout', '--detach', self.base)
+        policy = json.loads((self.repo / '.fork-ci.json').read_text())
+        policy['history_exclude'] = ['.claude']
+        (self.repo / '.fork-ci.json').write_text(json.dumps(policy))
+        base = self.commit('configure artifact-free upstream history')
+        ci.git(self.repo, 'checkout', '--detach', self.target)
+        (self.repo / '.claude').mkdir()
+        (self.repo / '.claude/chat.jsonl').write_text('synthetic conversation fixture\n')
+        raw_upstream = self.commit('upstream introduces private artifact')
+        for bare, revision in [(self.fork, base), (self.up, raw_upstream)]:
+            subprocess.run(['git', 'push', '--quiet', '--force', str(bare), revision + ':refs/heads/main'], cwd=self.repo, check=True)
+            subprocess.run(['git', '--git-dir', str(bare), 'update-server-info'], check=True)
+        outputs = self.prepare('filtered-first')
+        candidate = outputs['candidate']
+        work = Path(self.tmp.name) / 'filtered-first'
+        self.assertNotIn('.claude', ci.text(work, 'rev-list', '--objects', candidate))
+        self.assertNotIn(raw_upstream, ci.text(work, 'rev-list', candidate))
+        ci.promote(SimpleNamespace(repository='example/fork', target='main',
+                   work=Path(self.tmp.name) / 'filtered-promote', base=base, candidate=candidate))
+        self.assertEqual(self.prepare('filtered-noop'), {'changed': 'false'})
+
     def test_release_publication_rebuilds_already_merged_source(self):
         first = self.prepare('first')
         ci.promote(SimpleNamespace(repository='example/fork', target='main',

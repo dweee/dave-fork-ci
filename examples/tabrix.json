@@ -112,5 +112,35 @@
         ]
       ]
     }
+  ],
+  "history_exclude": [
+    ".claude",
+    ".omx",
+    ".codex",
+    ".codex-prompts",
+    ".cursor",
+    ".docs",
+    ".tmp",
+    ".private-artifacts",
+    ".private-tests",
+    ".playwright-mcp",
+    "docs/benchmarks",
+    "props-plan.md",
+    "builder-plan.md",
+    "editor-plan.md",
+    "plan.md",
+    "docs/PRODUCT_PRUNING_PLAN.md",
+    "docs/OMX_REORG_PLAN.md",
+    "docs/PHASE0_TOOL_VALIDATION_MATRIX.md",
+    "docs/PROGRAM1_PHASE1_APPROVED_PLAN.md",
+    "docs/PRODUCT_STRATEGY.md",
+    "docs/CLICK_V2_PRODUCT_AND_TECHNICAL_PLAN.md",
+    "docs/BEGINNER_HANDOFF_zh.md",
+    "docs/NIGHTLY_REPORT_2026-04-11.md",
+    "docs/DELIVERABLE_HANDOFF_zh.md",
+    "docs/PHASE0_OVERNIGHT_PLAN.md",
+    "docs/PHASE0_OMX_SPRINT_PLAN.md",
+    "docs/PHASE0_ISSUE_PRIORITY_SUMMARY.md",
+    "app/chrome-extension/CACHE_MANAGEMENT_SUMMARY.md"
   ]
 }

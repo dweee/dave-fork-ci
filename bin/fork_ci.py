@@ -11,6 +11,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from history_filter import filter_history
 
 SHA = re.compile(r"[a-f0-9]{40}")
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -26,7 +27,7 @@ class Blocked(RuntimeError):
     pass
 
 
-def git(repo, *args, check=True, extra_env=None):
+def git(repo, *args, check=True, extra_env=None, input_data=None):
     # No inherited global helpers, filters, tracing, hooks or file transports.
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(('GIT_', 'GH_', 'GITHUB_TOKEN', 'ATTIC_TOKEN'))}
@@ -35,7 +36,7 @@ def git(repo, *args, check=True, extra_env=None):
     env.update(extra_env or {})
     result = subprocess.run(['git', '-c', 'core.hooksPath=' + os.devnull,
                              '-c', 'core.fsmonitor=false', '-c', 'protocol.file.allow=never',
-                             *args], cwd=repo, env=env, capture_output=True)
+                             *args], cwd=repo, env=env, capture_output=True, input=input_data)
     if check and result.returncode:
         raise Blocked('Git operation failed; resolve conflicts or repository policy locally')
     return result
@@ -87,6 +88,17 @@ def validate_policy(policy):
     for pattern in policy.get('protected_paths', []):
         if not isinstance(pattern, str) or not pattern:
             raise Blocked('Invalid protected path pattern')
+    excluded = policy.get('history_exclude', [])
+    if not isinstance(excluded, list) or len(excluded) > 100:
+        raise Blocked('History exclusions must be a bounded list of literal paths')
+    for path in excluded:
+        if (not isinstance(path, str) or not path or path.startswith(('/', '-'))
+                or any(p in ('', '.', '..', '.git') for p in path.split('/'))
+                or any(c in path for c in '*?[]\\\r\n\0')
+                or any(fnmatch.fnmatchcase(path, p) or p.startswith(path + '/')
+                       for p in PROTECTED + ['flake.nix'] + policy.get('required_paths', [])
+                       + policy.get('protected_paths', []))):
+            raise Blocked('History exclusions cannot hide control/protected files')
     return policy
 
 
@@ -221,6 +233,16 @@ def prepare(args):
             targets.append(release['sha'])
         state['release'] = release
     previous = tree_bytes(repo, base, STATE, optional=True)
+    excluded = policy.get('history_exclude', [])
+    if excluded:
+        state['history_exclude'] = sorted(set(excluded))
+        filtered = {revision: filter_history(repo, revision, excluded, git)
+                    for revision in dict.fromkeys(targets)}
+        targets = [filtered[revision] for revision in targets]
+        if state.get('branch'):
+            state['filtered_branch'] = filtered[state['branch']]
+        if state.get('release'):
+            state['release']['filtered_sha'] = filtered[state['release']['sha']]
     if (previous is not None and json.loads(previous) == state) or not targets:
         emit({'changed': 'false'})
         return
@@ -229,6 +251,8 @@ def prepare(args):
         old = json.loads(previous)
         if old.get('upstream') != policy['upstream'] or old.get('track') != policy['track']:
             raise Blocked('Upstream policy changed; review/reset its recorded state locally')
+        if old.get('history_exclude', []) != state.get('history_exclude', []):
+            raise Blocked('History exclusion policy changed; local review required')
         if old.get('branch') and state.get('branch') and git(repo, 'merge-base', '--is-ancestor', old['branch'], state['branch'], check=False).returncode:
             raise Blocked('Upstream branch was rewritten; local review required')
         if old.get('release') and state.get('release') and old['release']['tag'] == state['release']['tag'] and old['release']['sha'] != state['release']['sha']:
@@ -250,7 +274,21 @@ def verify(repo, base, candidate, target, policy):
     state = json.loads(tree_bytes(repo, candidate, STATE))
     if state['upstream'] != policy['upstream'] or state['track'] != policy['track']:
         raise Blocked('Candidate does not match the configured upstream')
-    for sha in [state.get('branch'), (state.get('release') or {}).get('sha')]:
+    excluded = sorted(set(policy.get('history_exclude', [])))
+    if state.get('history_exclude', []) != excluded:
+        raise Blocked('Candidate history filter does not match policy')
+    revisions = [state.get('branch'), (state.get('release') or {}).get('sha')]
+    if excluded:
+        filtered = [state.get('filtered_branch'), (state.get('release') or {}).get('filtered_sha')]
+        for original, expected in zip(revisions, filtered):
+            if original:
+                if not SHA.fullmatch(original) or not isinstance(expected, str) or not SHA.fullmatch(expected):
+                    raise Blocked('Invalid filtered upstream revision')
+                git(repo, 'fetch', '--no-tags', 'https://github.com/' + policy['upstream'] + '.git', original)
+                if filter_history(repo, original, excluded, git) != expected:
+                    raise Blocked('Candidate filtered history does not match upstream')
+        revisions = filtered
+    for sha in revisions:
         if sha and (not SHA.fullmatch(sha) or git(repo, 'merge-base', '--is-ancestor', sha, candidate, check=False).returncode):
             raise Blocked('Candidate does not contain the recorded upstream commit')
 
