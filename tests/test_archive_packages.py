@@ -13,13 +13,25 @@ class ArchiveTests(unittest.TestCase):
     def test_old_run_backup_does_not_request_workflow_write_authority(self):
         run = {'head_sha': 'a' * 40, 'id': 42, 'html_url': 'https://example.test/runs/42'}
         with patch.object(archive, 'gh') as call:
-            archive.create_release('example/fork', 'main', run, 'packages-42')
+            archive.create_release('example/fork', 'main', run, 'packages-42',
+                                   [{'name': 'nix-aarch64-darwin-package-' + run['head_sha']}])
         args = call.call_args.args
         self.assertEqual(args[args.index('--target') + 1], 'main')
         notes = args[args.index('--notes') + 1]
         self.assertIn(run['head_sha'], notes)
         self.assertIn(run['html_url'], notes)
         self.assertIn('not the built source revision', notes)
+
+    def test_upstream_candidate_revision_is_distinct_from_workflow_trigger(self):
+        run = {'head_sha': 'a' * 40, 'id': 42, 'html_url': 'https://example.test/runs/42'}
+        candidate = 'b' * 40
+        with patch.object(archive, 'gh') as call:
+            archive.create_release('example/fork', 'main', run, 'packages-42',
+                                   [{'name': 'fork-cache-aarch64-darwin-' + candidate}])
+        args = call.call_args.args
+        notes = args[args.index('--notes') + 1]
+        self.assertIn('Built source revisions: ' + candidate, notes)
+        self.assertIn('Workflow trigger revision: ' + run['head_sha'], notes)
 
     def test_untrusted_run_cannot_publish_release_assets(self):
         good = {'repository': {'full_name': 'example/fork'}, 'head_repository': {'full_name': 'example/fork'},
