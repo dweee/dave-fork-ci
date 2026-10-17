@@ -24,6 +24,14 @@ on:
       attic-cache:
         default: ''
         type: string
+      attic-substituter:
+        description: Optional public read-only cache URL for package builds and tests
+        default: ''
+        type: string
+      attic-public-key:
+        description: Public Nix verification key for the build cache
+        default: ''
+        type: string
       max-closure-mib:
         description: Uncompressed export limit for each platform
         default: 4096
@@ -126,6 +134,8 @@ jobs:
       - name: Build packages and run fork checks
         env:
           SYSTEM: ${{ matrix.system }}
+          ATTIC_SUBSTITUTER: ${{ inputs.attic-substituter }}
+          ATTIC_PUBLIC_KEY: ${{ inputs.attic-public-key }}
         run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt
       - name: Export runtime closures as data
         env:

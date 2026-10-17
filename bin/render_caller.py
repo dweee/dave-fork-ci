@@ -28,6 +28,8 @@ jobs:
       cache: true
       attic-endpoint: ${{ vars.ATTIC_ENDPOINT }}
       attic-cache: ${{ vars.ATTIC_CACHE }}
+      attic-substituter: ${{ vars.ATTIC_SUBSTITUTER }}
+      attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY }}
     secrets:
       ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
 '''.replace('REPOSITORY', repository).replace('REVISION', revision)
