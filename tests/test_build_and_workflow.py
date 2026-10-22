@@ -162,6 +162,13 @@ class BuildAndWorkflowTests(unittest.TestCase):
         self.assertIn("needs.cache.result == 'success'", promote)
         self.assertIn('vars.FORK_CI_AUTO_MERGE', promote)
 
+    def test_scanner_keeps_default_rules_and_the_known_registration_fixture(self):
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
+        self.assertIn('useDefault = true', source)
+        self.assertIn('[allowlist]', source)
+        self.assertIn('0123456789abcdef', source)
+        self.assertIn('--ignore-gitleaks-allow', source)
+
     def test_all_external_actions_are_pinned(self):
         import re
         source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()

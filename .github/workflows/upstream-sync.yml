@@ -129,7 +129,14 @@ jobs:
           scanner=$(nix build --no-link --print-out-paths --max-jobs 0 --builders '' \
             --option accept-flake-config false --option substituters https://cache.nixos.org \
             github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0#gitleaks)
-          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/scanner.toml"
+          cat > "$RUNNER_TEMP/scanner.toml" << 'EOF'
+          [extend]
+          useDefault = true
+
+          [allowlist]
+          description = "Matrix registration fixture in the Debian package smoke test"
+          regexes = ['''0123456789abcdef''']
+          EOF
           mkdir -p "$RUNNER_TEMP/empty-ignore"
           "$scanner/bin/gitleaks" git candidate --config "$RUNNER_TEMP/scanner.toml" \
             --log-opts="$BASE..$CANDIDATE --no-ext-diff --no-textconv" \
