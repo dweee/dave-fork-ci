@@ -1,4 +1,8 @@
 import importlib.util
+import hashlib
+import json
+import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -52,6 +56,53 @@ class ArchiveTests(unittest.TestCase):
                            {'repository': {'full_name': 'other/fork'}}]:
                 with self.subTest(event=event, change=change), self.assertRaises(ValueError):
                     archive.validate_run(good | {'event': event} | change, 'example/fork', 'main')
+
+    def exercise_backup(self, conclusion, bad_digest=False):
+        data = b'opaque synthetic package archive'
+        name = 'nix-aarch64-darwin-package-' + 'a' * 40
+        run = {'repository': {'full_name': 'example/fork'},
+               'head_repository': {'full_name': 'example/fork'}, 'event': 'push',
+               'head_branch': 'main', 'head_sha': 'a' * 40, 'id': 42,
+               'conclusion': conclusion}
+        artifact = {'id': 7, 'name': name, 'expired': False, 'size_in_bytes': len(data)}
+        calls = []
+        def gh(*args):
+            calls.append(args)
+            if args == ('api', 'repos/example/fork/actions/runs/42'):
+                return json.dumps(run).encode()
+            if args[:3] == ('api', '--paginate', '--slurp'):
+                return json.dumps([{'artifacts': [artifact]}]).encode()
+            if args == ('api', 'repos/example/fork/releases/tags/packages-42'):
+                checksum = '0' * 64 if bad_digest else hashlib.sha256(data).hexdigest()
+                return json.dumps({'assets': [{'name': name + '.zip', 'size': len(data),
+                                              'digest': 'sha256:' + checksum}]}).encode()
+            return b'{}'
+        def command(args, **kwargs):
+            if args[1:3] == ['api', '--allow-escape-sequences']:
+                kwargs['stdout'].write(data)
+            return subprocess.CompletedProcess(args, 0)
+        env = {'GITHUB_REPOSITORY': 'example/fork', 'DEFAULT_BRANCH': 'main', 'PACKAGE_RUN_ID': '42'}
+        with patch.dict(os.environ, env, clear=True), patch.object(archive, 'gh', side_effect=gh), \
+             patch.object(archive.subprocess, 'run', side_effect=command):
+            if bad_digest:
+                with self.assertRaises(ValueError):
+                    archive.main()
+            else:
+                archive.main()
+        return calls
+
+    def test_verified_failed_run_archives_remain_available_for_publisher_retries(self):
+        for conclusion in ['failure', 'cancelled', 'timed_out', None, 'success']:
+            with self.subTest(conclusion=conclusion):
+                calls = self.exercise_backup(conclusion)
+                uploads = [args for args in calls if args[:2] == ('release', 'upload')]
+                self.assertEqual(len(uploads), 2)  # archive and checksum are retained for every result
+                deletions = [args for args in calls if 'DELETE' in args]
+                self.assertEqual(len(deletions), int(conclusion == 'success'))
+
+    def test_unverified_release_asset_never_allows_source_artifact_cleanup(self):
+        calls = self.exercise_backup('success', bad_digest=True)
+        self.assertFalse(any('DELETE' in args for args in calls))
 
     def test_large_archive_splits_round_trip_without_executing_it(self):
         with tempfile.TemporaryDirectory() as directory:

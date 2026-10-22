@@ -114,8 +114,10 @@ def main():
             sums.write_text(checksum + '  ' + path.name + '\n')
             gh('release', 'upload', tag, str(sums), '--repo', repository, '--clobber')
             print('Backed up ' + item['name'] + ' as ' + ', '.join(uploaded))
-            # Remove only the now-verified duplicate artifact to conserve Actions storage.
-            gh('api', '--method', 'DELETE', f'repos/{repository}/actions/artifacts/{item["id"]}')
+            # Failed publishers need the original artifact when only failed jobs
+            # are retried. Retention still bounds storage for unsuccessful runs.
+            if run.get('conclusion') == 'success':
+                gh('api', '--method', 'DELETE', f'repos/{repository}/actions/artifacts/{item["id"]}')
 
 
 if __name__ == '__main__':
