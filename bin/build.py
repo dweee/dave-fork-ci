@@ -50,6 +50,19 @@ def public_cache(env):
     return endpoint
 
 
+def guard_public(source, targets):
+    """Reject on-prem derivations before any public build. Keep evaluator output out of the log."""
+    script = Path(__file__).resolve().parents[1] / 'ci' / 'public-closure.py'
+    for target in targets:
+        try:
+            result = subprocess.run([sys.executable, str(script), target], cwd=source,
+                                    capture_output=True, text=True)
+        except (OSError, subprocess.SubprocessError):
+            raise Blocked('Public derivation closure check failed; build and publication are blocked.') from None
+        if result.returncode:
+            raise Blocked('Public derivation closure check failed; build and publication are blocked.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
@@ -71,10 +84,11 @@ def main():
     if substituter:
         flags += ['--option', 'http2', env.get('ATTIC_HTTP2', 'true')]
     packages = ['.#packages.' + args.system + '.' + name for name in row['packages']]
+    checks = ['.#checks.' + args.system + '.' + name for name in row.get('checks', [])]
+    guard_public(args.source, packages + checks)
     result = subprocess.check_output(['nix', 'build', '--no-link', '--json', *flags, *packages],
                                      cwd=args.source, env=env)
     roots = sorted({path for output in json.loads(result) for path in output['outputs'].values()})
-    checks = ['.#checks.' + args.system + '.' + name for name in row.get('checks', [])]
     if checks:
         subprocess.run(['nix', 'build', '--no-link', *flags, *checks],
                        cwd=args.source, env=env, check=True)

@@ -87,6 +87,26 @@ class BuildAndWorkflowTests(unittest.TestCase):
             self.assertEqual(args[args.index('accept-flake-config') + 1], 'false')
             self.assertEqual(outputs.read_text(), path + '\n')
 
+    def test_public_derivation_rejection_blocks_the_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.fork-ci.json').write_text(json.dumps(POLICY))
+            outputs = root / 'outputs.txt'
+            def run(args, **kwargs):
+                if any(str(arg).endswith('public-closure.py') for arg in args):
+                    raise subprocess.CalledProcessError(1, args, stderr='private fixture wiicompiled-disc')
+                return subprocess.CompletedProcess(args, 0)
+            path = '/nix/store/' + 'a' * 32 + '-package'
+            with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else json.dumps([{'outputs': {'out': path}}]).encode()) as built, \
+                 patch.object(build.subprocess, 'run', side_effect=run):
+                with self.assertRaises(fork_ci.Blocked) as failure:
+                    build.main()
+            self.assertNotIn('private fixture', str(failure.exception))
+            self.assertFalse(outputs.exists())
+            self.assertFalse(any(call.args[0][:2] == ['nix', 'build'] for call in built.call_args_list))
+
     def test_build_rejects_cache_upload_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

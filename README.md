@@ -7,9 +7,9 @@ The composite [action.yml](action.yml) handles Git preparation/promotion without
 ## Behavior
 
 1. Poll the configured public upstream branch, latest stable GitHub release, or both. A six-hour caller schedule works without upstream cooperation; an optional `repository_dispatch` can wake it sooner. A release in somebody else's repository does not directly trigger your fork's workflow. Drafts and prereleases are excluded.
-2. Three-way merge the resolved upstream commits into the fork default branch in a scratch clone. Preserve fork commits and ancestry; never reset/rebase away local patches. Record resolved branch/release SHAs and publish an immutable `sync/upstream/<commit>` branch.
-3. Scan incoming Git history with trusted Gitleaks rules, build selected packages/checks on each configured native platform, then run configured argument-vector test commands. Package builds do not receive Git write or Attic credentials. An unchanged upstream/release state uses no macOS build job.
-4. After **every build row succeeds**, export only the selected runtime closures. Fresh Linux publisher jobs install a trusted pinned Attic client before importing NAR data and then upload to a cache-scoped candidate cache. Darwin packages can be uploaded from Linux without running them.
+2. Three-way merge the resolved upstream commits into the fork default branch in a scratch clone. Preserve fork commits and ancestry; never reset/rebase away local patches. Keep the fork's control and protected paths, including when upstream only conflicts there. Record resolved branch/release SHAs and publish an immutable `sync/upstream/<commit>` branch.
+3. Scan incoming Git history with trusted Gitleaks rules. Reject on-prem-only derivations before building. Then build selected packages/checks on each configured native platform and run configured argument-vector test commands. Package builds do not receive Git write or Attic credentials. An unchanged upstream/release state uses no macOS build job.
+4. After **every build row succeeds**, reject a denied runtime path and then export only the selected runtime closures. The same runtime check runs again after import, before signature restore. Fresh Linux publisher jobs install a trusted pinned Attic client before importing NAR data and then upload to a cache-scoped candidate cache. Darwin packages can be uploaded from Linux without running them.
 5. After every required cache upload succeeds, a fresh Git-only job checks the candidate SHA, ancestry, protected paths and current main. It then makes a normal fast-forward push to the fork's default branch. There is no force push, branch-protection bypass, package rebuild or candidate-script execution in this job. Cache failure prevents main promotion. Successful earlier cache rows may remain in the isolated candidate cache if a later row fails.
 
 When `cache: false` is explicitly selected, builds/checks remain mandatory and cache publication is skipped. Automatic promotion additionally requires both `auto-merge: true` and repository variable `FORK_CI_AUTO_MERGE=true`. The entire workflow also requires `FORK_CI_ENABLED=true`. The reusable workflow is installed; consumers explicitly enable it using those variables.
@@ -62,7 +62,7 @@ Enable `FORK_CI_ENABLED` for a supervised candidate-only run first; leave `FORK_
 
 ## Failures and review
 
-Conflicts, upstream branch rewrites, moved release tags, changes to `.github`, `.forgejo`, `.gitmodules`, policy/state control files or configured protected paths stop automatic maintenance. New secret detections also stop builds. These cases require a local review and an ordinary reviewed commit; broad scanner exclusions and dropping local changes are not automatic repairs. A clean candidate branch remains available when a later build/cache/promotion fails. Conflicting merges do not publish a candidate. Concurrent operator work is preserved by checking the expected branch and using a normal fast-forward push.
+Conflicts outside the fork's control paths, upstream branch rewrites, and moved release tags stop automatic maintenance. Upstream edits to `.github`, `.forgejo`, `.gitmodules`, `.fork-ci`, `.fork-ci.json` and configured protected paths stay on the fork version, including modify/delete conflicts limited to those paths, so an upstream workflow tweak does not block the source update. A symlink planted on one of those paths is removed without being followed. New secret detections also stop builds. Remaining conflicts require a local review and an ordinary reviewed commit; broad scanner exclusions and dropping local changes are not automatic repairs. A clean candidate branch remains available when a later build/cache/promotion fails. Conflicting merges do not publish a candidate. Concurrent operator work is preserved by checking the expected branch and using a normal fast-forward push.
 
 Do not run this on persistent self-hosted workers: build/dependency code can modify its runner. Git-write jobs and cache publishers must stay on fresh GitHub-hosted runners. Candidate NARs are treated as untrusted data, and cache writes stay in the isolated candidate cache. Passing tests does not prove an upstream release harmless; you must trust the configured upstream and maintain meaningful policy tests.
 
@@ -72,6 +72,7 @@ Do not run this on persistent self-hosted workers: build/dependency code can mod
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 PYTHONDONTWRITEBYTECODE=1 python3 ci/test-push-attic.py
 PYTHONDONTWRITEBYTECODE=1 python3 ci/test-transfer-attic.py
+PYTHONDONTWRITEBYTECODE=1 python3 ci/test-public-closure.py
 actionlint -shellcheck= -pyflakes= .github/workflows/upstream-sync.yml
 ```
 

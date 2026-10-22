@@ -50,8 +50,10 @@ class TransferSafetyTests(unittest.TestCase):
             process.poll.return_value = 0
             with patch.dict(os.environ, {}, clear=True), \
                     patch.object(module.subprocess, 'Popen', return_value=process), \
+                    patch.object(module.policy, 'runtime', return_value=[root]) as guard, \
                     patch.object(module.subprocess, 'run') as call:
                 module.transfer('import', directory, 1024)
+            guard.assert_called_once_with([root])
             self.assertEqual(call.call_args_list[0].args[0], ['nix-store', '--check-validity', root])
             self.assertEqual(call.call_args_list[1].args[0],
                              ['nix', 'store', 'copy-sigs', '--substituter',

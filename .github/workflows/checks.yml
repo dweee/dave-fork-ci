@@ -21,3 +21,4 @@ jobs:
           python3 -m unittest discover -s tests -v
           python3 ci/test-push-attic.py
           python3 ci/test-transfer-attic.py
+          python3 ci/test-public-closure.py

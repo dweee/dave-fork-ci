@@ -76,20 +76,60 @@ class MergeTests(unittest.TestCase):
         with self.assertRaises(ci.Blocked):
             self.candidate(self.upstream())
 
-    def test_workflow_change_requires_review(self):
-        with self.assertRaises(ci.Blocked):
-            self.candidate(self.upstream('.github/workflows/upstream.yml', 'name: changed\n'))
+    def test_workflow_change_keeps_fork_control_files(self):
+        candidate = self.candidate(self.upstream('.github/workflows/upstream.yml', 'name: changed\n'))
+        self.assertIsNone(ci.tree_bytes(self.repo, candidate, '.github/workflows/upstream.yml', optional=True))
+        self.assertEqual(ci.tree_bytes(self.repo, candidate, 'local-patch.txt'), b'preserve custom behavior\n')
+        ci.verify(self.repo, self.base, candidate, self.base, POLICY)
 
-    def test_new_submodule_transport_requires_review(self):
-        with self.assertRaises(ci.Blocked):
-            self.candidate(self.upstream('.gitmodules', '[submodule "x"]\n'))
+    def test_clean_protected_edit_stays_on_the_fork_version(self):
+        ci.git(self.repo, 'checkout', '--detach', self.base)
+        path = self.repo / '.github/CODEOWNERS'
+        path.parent.mkdir(parents=True)
+        path.write_text('fork\n')
+        self.base = self.commit('fork codeowners')
+        ci.git(self.repo, 'checkout', '--detach', self.base)
+        path.write_text('upstream\n')
+        (self.repo / 'upstream.txt').write_text('synced\n')
+        target = self.commit('upstream codeowners and source')
+        candidate = self.candidate(target)
+        self.assertEqual(ci.tree_bytes(self.repo, candidate, '.github/CODEOWNERS'), b'fork\n')
+        self.assertEqual(ci.tree_bytes(self.repo, candidate, 'upstream.txt'), b'synced\n')
+
+    def test_protected_workflow_conflict_keeps_fork_deletion_and_upstream_source(self):
+        ci.git(self.repo, 'checkout', '--detach', self.base)
+        path = self.repo / '.github/workflows/tests.yml'
+        path.parent.mkdir(parents=True)
+        path.write_text('name: old\n')
+        shared = self.commit('shared workflow')
+        ci.git(self.repo, 'checkout', '--detach', shared)
+        path.write_text('name: new\n')
+        (self.repo / 'upstream.txt').write_text('synced\n')
+        target = self.commit('upstream edits workflow and source')
+        ci.git(self.repo, 'checkout', '--detach', shared)
+        path.unlink()
+        self.base = self.commit('fork removes upstream workflow')
+        candidate = self.candidate(target)
+        self.assertIsNone(ci.tree_bytes(self.repo, candidate, '.github/workflows/tests.yml', optional=True))
+        self.assertEqual(ci.tree_bytes(self.repo, candidate, 'upstream.txt'), b'synced\n')
+        self.assertEqual(ci.tree_bytes(self.repo, candidate, 'local-patch.txt'), b'preserve custom behavior\n')
+
+    def test_new_submodule_transport_is_not_imported(self):
+        candidate = self.candidate(self.upstream('.gitmodules', '[submodule "x"]\n'))
+        self.assertIsNone(ci.tree_bytes(self.repo, candidate, '.gitmodules', optional=True))
+        self.assertEqual(ci.tree_bytes(self.repo, candidate, 'local-patch.txt'), b'preserve custom behavior\n')
+        ci.verify(self.repo, self.base, candidate, self.base, POLICY)
 
     def test_symlink_state_directory_cannot_escape(self):
         ci.git(self.repo, 'checkout', '--detach', self.upstream_base)
         (self.repo / '.fork-ci').symlink_to(self.tmp.name, target_is_directory=True)
         target = self.commit('upstream state symlink')
-        with self.assertRaises(ci.Blocked):
-            self.candidate(target)
+        outside = Path(self.tmp.name) / 'upstream-state.json'
+        candidate = self.candidate(target)
+        self.assertFalse(outside.exists())
+        self.assertFalse((self.repo / '.fork-ci').is_symlink())
+        self.assertEqual(ci.text(self.repo, 'ls-tree', candidate, '--', '.fork-ci').split(' ', 1)[0], '040000')
+        self.assertTrue((self.repo / ci.STATE).is_file())
 
     def test_removed_custom_path_is_blocked(self):
         ci.git(self.repo, 'checkout', '--detach', self.base)

@@ -3,12 +3,17 @@
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+spec = importlib.util.spec_from_file_location('public_closure', Path(__file__).with_name('public-closure.py'))
+policy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(policy)
 
 
 def roots(manifest):
@@ -38,9 +43,9 @@ def transfer(mode, directory, limit):
     manifest = directory / "outputs.txt"
     if mode == "export":
         paths = roots(Path("outputs.txt"))
-        requisites = subprocess.run(["nix-store", "--query", "--requisites", *paths],
-                                   capture_output=True, text=True, check=True).stdout.splitlines()
-        if not requisites or any(not re.fullmatch(r"/nix/store/[a-z0-9]{32}-[^/\s]+", p) for p in requisites):
+        # Reject denied runtime paths before an archive or public artifact exists.
+        requisites = policy.runtime(paths)
+        if any(not re.fullmatch(r"/nix/store/[a-z0-9]{32}-[^/\s]+", p) for p in requisites):
             raise ValueError("Invalid closure paths")
         process = subprocess.Popen(["nix-store", "--export", *requisites], stdout=subprocess.PIPE)
         try:
@@ -75,6 +80,7 @@ def transfer(mode, directory, limit):
             if process.wait():
                 raise ValueError("Closure import failed")
             subprocess.run(["nix-store", "--check-validity", *paths], check=True)
+            policy.runtime(paths)
             # The export/import format drops signatures. Restore them only
             # from the official cache so Attic can skip its existing outputs.
             # Builder-supplied metadata never decides which paths to skip.

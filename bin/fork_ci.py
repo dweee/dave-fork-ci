@@ -154,6 +154,42 @@ def changes(repo, base, head):
     return [p.decode() for p in git(repo, 'diff', '--name-only', '-z', base, head).stdout.split(b'\0') if p]
 
 
+def protected_patterns(policy):
+    return PROTECTED + policy.get('protected_paths', [])
+
+
+def path_protected(path, policy):
+    return any(fnmatch.fnmatchcase(path, pattern) for pattern in protected_patterns(policy))
+
+
+def protected_roots(policy):
+    roots = []
+    for pattern in protected_patterns(policy):
+        root = pattern.split('*', 1)[0].rstrip('/')
+        if root and root not in roots:
+            roots.append(root)
+    return roots
+
+
+def unmerged(repo):
+    return [p.decode() for p in git(repo, 'diff', '--name-only', '-z', '--diff-filter=U').stdout.split(b'\0') if p]
+
+
+def restore_protected(repo, base, policy):
+    """Keep the fork's control files. Upstream edits there are not a source update."""
+    for root in protected_roots(policy):
+        worktree = repo / root
+        if worktree.is_symlink():
+            # Unlink the symlink itself. Never traverse it into another directory.
+            worktree.unlink()
+        git(repo, 'rm', '-r', '--cached', '--ignore-unmatch', '--quiet', '--', root, check=False)
+        if git(repo, 'cat-file', '-e', base + ':' + root, check=False).returncode == 0:
+            git(repo, 'checkout', base, '--', root)
+    if unmerged(repo):
+        git(repo, 'merge', '--abort', check=False)
+        raise Blocked('Git operation failed; resolve conflicts or repository policy locally')
+
+
 def guard(repo, base, head, policy, allow_state=False):
     patterns = PROTECTED + policy.get('protected_paths', [])
     blocked = [p for p in changes(repo, base, head)
@@ -181,7 +217,13 @@ def merge_candidate(repo, base, targets, policy, state):
     for target in dict.fromkeys(targets):
         if git(repo, 'merge-base', '--is-ancestor', target, 'HEAD', check=False).returncode == 0:
             continue
-        git(repo, 'merge', '--no-ff', '--no-commit', target, extra_env=env)
+        merged = git(repo, 'merge', '--no-ff', '--no-commit', target, extra_env=env, check=False)
+        if merged.returncode:
+            conflicts = unmerged(repo)
+            if not conflicts or any(not path_protected(path, policy) for path in conflicts):
+                git(repo, 'merge', '--abort', check=False)
+                raise Blocked('Git operation failed; resolve conflicts or repository policy locally')
+        restore_protected(repo, base, policy)
         guard(repo, base, 'HEAD', policy)
         # A pending merge is in the index; HEAD still points at its first parent.
         tree = text(repo, 'write-tree')
