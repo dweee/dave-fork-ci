@@ -134,8 +134,9 @@ jobs:
           useDefault = true
 
           [allowlist]
-          description = "Matrix registration fixture in the Debian package smoke test"
-          regexes = ['''0123456789abcdef''']
+          description = "Known public fixture and standard FNV-1a 128-bit offset declaration"
+          regexTarget = "line"
+          regexes = ['''0123456789abcdef''', '''^\s*let mut key = 0x6c62272e07bb014262b821756295c58du128;$''']
           EOF
           mkdir -p "$RUNNER_TEMP/empty-ignore"
           "$scanner/bin/gitleaks" git candidate --config "$RUNNER_TEMP/scanner.toml" \

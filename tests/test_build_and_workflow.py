@@ -169,6 +169,20 @@ class BuildAndWorkflowTests(unittest.TestCase):
         self.assertIn('0123456789abcdef', source)
         self.assertIn('--ignore-gitleaks-allow', source)
 
+    def test_scanner_fnv_exception_requires_the_exact_public_constant_declaration(self):
+        import re
+        import textwrap
+        import tomllib
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
+        config = source.split("<< 'EOF'\n", 1)[1].split('          EOF', 1)[0]
+        allowlist = tomllib.loads(textwrap.dedent(config))['allowlist']
+        self.assertEqual(allowlist['regexTarget'], 'line')
+        allowed = lambda line: any(re.search(pattern, line) for pattern in allowlist['regexes'])
+        self.assertTrue(allowed('        let mut key = 0x6c62272e07bb014262b821756295c58du128;'))
+        self.assertFalse(allowed('        let mut key = 0x6c62272e07bb014262b821756295c58eu128;'))
+        self.assertFalse(allowed('        let mut key = "unrelated-fixture-value";'))
+        self.assertFalse(allowed('let mut key = 0x6c62272e07bb014262b821756295c58du128; api_key = "unrelated";'))
+
     def test_all_external_actions_are_pinned(self):
         import re
         source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
