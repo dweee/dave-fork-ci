@@ -165,7 +165,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
     def test_scanner_keeps_default_rules_and_the_known_registration_fixture(self):
         source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
         self.assertIn('useDefault = true', source)
-        self.assertIn('[allowlist]', source)
+        self.assertIn('[[allowlists]]', source)
         self.assertIn('0123456789abcdef', source)
         self.assertIn('--ignore-gitleaks-allow', source)
 
@@ -175,8 +175,11 @@ class BuildAndWorkflowTests(unittest.TestCase):
         import tomllib
         source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
         config = source.split("<< 'EOF'\n", 1)[1].split('          EOF', 1)[0]
-        allowlist = tomllib.loads(textwrap.dedent(config))['allowlist']
+        allowlist = tomllib.loads(textwrap.dedent(config))['allowlists'][1]
         self.assertEqual(allowlist['regexTarget'], 'line')
+        self.assertEqual(allowlist['condition'], 'AND')
+        self.assertEqual(allowlist['targetRules'], ['generic-api-key'])
+        self.assertEqual(allowlist['paths'], [r'^decompiler/crates/kuna-console/src/grammar\.rs$'])
         allowed = lambda line: any(re.search(pattern, line) for pattern in allowlist['regexes'])
         self.assertTrue(allowed('        let mut key = 0x6c62272e07bb014262b821756295c58du128;'))
         self.assertFalse(allowed('        let mut key = 0x6c62272e07bb014262b821756295c58eu128;'))

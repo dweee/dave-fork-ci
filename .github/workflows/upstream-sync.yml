@@ -133,10 +133,17 @@ jobs:
           [extend]
           useDefault = true
 
-          [allowlist]
-          description = "Known public fixture and standard FNV-1a 128-bit offset declaration"
+          [[allowlists]]
+          description = "Matrix registration fixture in the Debian package smoke test"
+          regexes = ['''0123456789abcdef''']
+
+          [[allowlists]]
+          description = "Standard FNV-1a 128-bit offset in Kuna's parser"
+          targetRules = ["generic-api-key"]
+          condition = "AND"
+          paths = ['''^decompiler/crates/kuna-console/src/grammar\.rs$''']
           regexTarget = "line"
-          regexes = ['''0123456789abcdef''', '''^\s*let mut key = 0x6c62272e07bb014262b821756295c58du128;$''']
+          regexes = ['''^\s*let mut key = 0x6c62272e07bb014262b821756295c58du128;$''']
           EOF
           mkdir -p "$RUNNER_TEMP/empty-ignore"
           "$scanner/bin/gitleaks" git candidate --config "$RUNNER_TEMP/scanner.toml" \
