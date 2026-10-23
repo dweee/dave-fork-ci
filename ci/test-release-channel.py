@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import shutil
@@ -16,6 +19,22 @@ ENTRY = {'narHash': 'sha256-'+'A'*43+'=', 'narSize': 12, 'references': []}
 
 
 class Gates(unittest.TestCase):
+    def test_command_failure_does_not_echo_secrets_or_store_paths(self):
+        diagnostic = 'HTTP error 403 at /nix/store/' + 'a'*32 + '-private with token fixture-secret'
+        result = subprocess.CompletedProcess(['nix'], 1, stdout='', stderr=diagnostic)
+        with patch.object(c.subprocess, 'run', return_value=result):
+            with self.assertRaises(c.CommandFailure) as raised: c.run('nix', 'eval')
+        self.assertEqual(str(raised.exception), 'authorization (exit 1)')
+        self.assertNotIn('fixture-secret', str(raised.exception))
+        self.assertNotIn('/nix/store', str(raised.exception))
+
+    def test_fixed_diagnostic_categories_cover_cache_and_source_failures(self):
+        self.assertEqual(c.failure_category('hash mismatch in fixed-output derivation'), 'source-hash-mismatch')
+        self.assertEqual(c.failure_category('NAR hash mismatch'), 'cache-integrity')
+        self.assertEqual(c.failure_category('path lacks a signature by a trusted key'), 'cache-signature')
+        self.assertEqual(c.failure_category('HTTP/2 framing error'), 'transport')
+        self.assertEqual(c.failure_category('attribute xyz missing'), 'evaluation')
+
     def test_truncated_nar_blocks_release(self):
         with patch.object(c, 'info', return_value={A: ENTRY}), patch.object(c, 'run', side_effect=RuntimeError('truncated')):
             with self.assertRaises(RuntimeError): c.verify([A], {A: ENTRY}, {})
@@ -97,6 +116,28 @@ class Gates(unittest.TestCase):
         with patch.object(c, 'info', return_value={}), patch.object(c, 'run') as run:
             with self.assertRaises(ValueError): c.remote_closure([A], {})
             run.assert_not_called()
+
+
+class ReaderLifecycle(unittest.TestCase):
+    def test_cli_cleanup_needs_no_token_and_preserves_existing_nix_config(self):
+        helper = Path(__file__).with_name('configure-attic-read.py')
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)/'home'
+            temporary = Path(directory)/'job'
+            temporary.mkdir()
+            config = home/'.config/nix/nix.conf'
+            config.parent.mkdir(parents=True)
+            config.write_text('sandbox = false\n')
+            env = dict(os.environ, HOME=str(home), RUNNER_TEMP=str(temporary), ATTIC_TOKEN='fixture-token')
+            subprocess.run([sys.executable, str(helper)], env=env, capture_output=True, check=True)
+            credential = temporary/'flakey-attic.netrc'
+            self.assertTrue(credential.exists())
+            self.assertEqual(credential.stat().st_mode & 0o777, 0o600)
+            env.pop('ATTIC_TOKEN')
+            for _ in range(2):
+                subprocess.run([sys.executable, str(helper), '--cleanup'], env=env, capture_output=True, check=True)
+            self.assertFalse(credential.exists())
+            self.assertEqual(config.read_text().strip(), 'sandbox = false')
 
 
 @unittest.skipUnless(shutil.which('nix'), 'Nix required for signed cache fixture')
