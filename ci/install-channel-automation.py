@@ -9,12 +9,9 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
-import yaml
 
 def multiline(dumper, value):
     return dumper.represent_scalar('tag:yaml.org,2002:str', value, style='|' if '\n' in value else None)
-
-yaml.SafeDumper.add_representer(str, multiline)
 
 HERE = Path(__file__).resolve().parent
 CHECKOUT = 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
@@ -27,10 +24,23 @@ def expr(value):
     return '${{ ' + value + ' }}'
 
 
+def trusted_branch_ref(forge, branch):
+    full = "github.ref == 'refs/heads/" + branch + "'"
+    if forge == 'github':
+        return full
+    # Forgejo's scheduler stores the default branch as a bare ref. Push and
+    # dispatch runs still use refs/heads/. Accept the bare form only on cron;
+    # PR refs, tags and other branches must not enter credentialed jobs.
+    return "(" + full + " || (github.event_name == 'schedule' && github.ref == '" + branch + "'))"
+
+
 def install(args):
+    import yaml
+    yaml.SafeDumper.add_representer(str, multiline)
     root = args.directory.resolve()
     forge = args.forge
     github = forge == 'github'
+    trusted_ref = trusted_branch_ref(forge, args.branch)
     config = json.loads(args.policy.read_text())
     config.update(version=1, forge=forge, repository=args.repository, branch=args.branch,
                   remote=('https://github.com/' if github else 'https://git.monke.fail/')+args.repository+'.git')
@@ -105,7 +115,7 @@ def install(args):
                           {'x86_64-linux': 'nix', 'aarch64-linux': 'braco',
                            'aarch64-darwin': 'darwin-aarch64', 'x86_64-darwin': 'darwin-x86_64'})[system])
             native.update(needs=['test'], outputs={'proof': expr('steps.release.outputs.proof')},
-                          **{'if': expr("github.event_name != 'pull_request' && github.ref == 'refs/heads/"+args.branch+"'")})
+                          **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
             native['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap()+[
                 {'name': 'Configure job-local private cache reader',
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
@@ -117,7 +127,7 @@ def install(args):
                  'run': python('ci/configure-attic-read.py --cleanup')}]
             jobs[key] = native
             retention = job(native['runs-on'])
-            retention['if'] = expr("(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/"+args.branch+"'")
+            retention['if'] = expr("(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && " + trusted_ref)
             retention['steps'] = checkout()+bootstrap()+[
                 {'name': 'Configure job-local private reader',
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
@@ -132,7 +142,7 @@ def install(args):
             proofs[system] = expr('needs.'+key+'.outputs.proof')
         promoter = job()
         promoter.update(needs=needed, permissions={'contents': 'write'},
-                        **{'if': expr("github.event_name != 'pull_request' && github.ref == 'refs/heads/"+args.branch+"'")})
+                        **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
         promoter['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap()+[
             {'name': 'Atomically publish immutable release tag and channel',
              'env': {'CHANNEL_TOKEN': expr('secrets.CHANNEL_TOKEN || github.token'),
@@ -147,7 +157,7 @@ def install(args):
                                              'revision': {'type': 'string', 'description': 'Exact tested commit for stable; empty uses the event commit', 'required': False}}}},
             'permissions': {'contents': 'read'}, 'concurrency': {'group': 'verified-release-channels', 'cancel-in-progress': False}, 'jobs': jobs})
     monitor = job()
-    monitor['if'] = expr("github.ref == 'refs/heads/"+args.branch+"'")
+    monitor['if'] = expr(trusted_ref)
     monitor['timeout-minutes'] = 120
     monitor['steps'] = checkout()+bootstrap()+[
         {'name': 'Monitor manual package/file pins', 'id': 'monitor', 'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GITHUB_READ_TOKEN'),
@@ -159,7 +169,7 @@ def install(args):
     jobs = {'monitor': monitor}
     if not source_only:
         updater = job()
-        updater['if'] = expr("github.ref == 'refs/heads/"+args.branch+"'")
+        updater['if'] = expr(trusted_ref)
         updater['timeout-minutes'] = 120
         updater['steps'] = checkout()+bootstrap()+[
             {'name': 'Resolve every tracked input and validate the exact candidate', 'run': python('ci/update-inputs.py')},

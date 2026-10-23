@@ -1,0 +1,74 @@
+"""Regress the bare schedule ref observed on Forgejo, without a YAML dependency."""
+import importlib.util
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location('channel_installer', ROOT / 'ci/install-channel-automation.py')
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+
+
+def matches(expression, event, ref):
+    expression = expression.removeprefix('${{ ').removesuffix(' }}')
+    expression = expression.replace('github.event_name', repr(event)).replace('github.ref', repr(ref))
+    return eval(expression.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}})
+
+
+class ChannelWorkflowRefs(unittest.TestCase):
+    def generated(self, forge, directory):
+        root = Path(directory)
+        (root / 'flake.nix').touch()
+        policy = root / 'policy.json'
+        policy.write_text(json.dumps({'targets': {'x86_64-linux': []}}))
+        args = SimpleNamespace(directory=root, forge=forge, repository='fixture/tool', branch='main', policy=policy)
+        # JSON is a YAML subset. Capture generated job definitions using only
+        # stdlib; production serialization remains PyYAML's safe_dump.
+        yaml = SimpleNamespace(SafeDumper=SimpleNamespace(add_representer=lambda *a: None),
+                               safe_dump=lambda value, **kw: json.dumps(value))
+        with patch.dict('sys.modules', {'yaml': yaml}):
+            installer.install(args)
+        folder = root / ('.github/workflows' if forge == 'github' else '.forgejo/workflows')
+        return {name: json.loads((folder / (name + '.yml')).read_text().split('\n', 1)[1])
+                for name in ['release-channels', 'scheduled-updates']}
+
+    def test_forgejo_cron_runs_monitor_inputs_build_and_retention_on_bare_default_ref(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.generated('forgejo', directory)
+        for workflow in workflows.values():
+            for name, job in workflow['jobs'].items():
+                if 'if' in job:
+                    with self.subTest(job=name):
+                        self.assertTrue(matches(job['if'], 'schedule', 'main'))
+                        self.assertFalse(matches(job['if'], 'schedule', 'feature'))
+                        self.assertFalse(matches(job['if'], 'pull_request', 'refs/pull/3/head'))
+                        self.assertFalse(matches(job['if'], 'push', 'refs/tags/main'))
+                        self.assertFalse(matches(job['if'], 'workflow_dispatch', 'main'))
+
+    def test_fully_qualified_dispatch_ref_still_runs_both_forges(self):
+        for forge in ['github', 'forgejo']:
+            with tempfile.TemporaryDirectory() as directory:
+                workflows = self.generated(forge, directory)
+            for workflow in workflows.values():
+                for name, job in workflow['jobs'].items():
+                    if 'if' in job:
+                        with self.subTest(forge=forge, job=name):
+                            self.assertTrue(matches(job['if'], 'workflow_dispatch', 'refs/heads/main'))
+
+    def test_github_does_not_accept_bare_schedule_ref(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.generated('github', directory)
+        for workflow in workflows.values():
+            for name, job in workflow['jobs'].items():
+                if 'if' in job:
+                    with self.subTest(job=name):
+                        self.assertFalse(matches(job['if'], 'schedule', 'main'))
+                        self.assertTrue(matches(job['if'], 'schedule', 'refs/heads/main'))
+
+
+if __name__ == '__main__':
+    unittest.main()
