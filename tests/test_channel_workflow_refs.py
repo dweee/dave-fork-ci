@@ -20,11 +20,11 @@ def matches(expression, event, ref):
 
 
 class ChannelWorkflowRefs(unittest.TestCase):
-    def generated(self, forge, directory):
+    def generated(self, forge, directory, systems=('x86_64-linux',)):
         root = Path(directory)
         (root / 'flake.nix').touch()
         policy = root / 'policy.json'
-        policy.write_text(json.dumps({'targets': {'x86_64-linux': []}}))
+        policy.write_text(json.dumps({'targets': {system: [] for system in systems}}))
         args = SimpleNamespace(directory=root, forge=forge, repository='fixture/tool', branch='main', policy=policy)
         # JSON is a YAML subset. Capture generated job definitions using only
         # stdlib; production serialization remains PyYAML's safe_dump.
@@ -68,6 +68,26 @@ class ChannelWorkflowRefs(unittest.TestCase):
                     with self.subTest(job=name):
                         self.assertFalse(matches(job['if'], 'schedule', 'main'))
                         self.assertTrue(matches(job['if'], 'schedule', 'refs/heads/main'))
+
+    def test_cache_audits_use_general_linux_runner_and_builds_remain_native(self):
+        platforms = {
+            'github': {'x86_64-linux': 'ubuntu-24.04', 'aarch64-linux': 'ubuntu-24.04-arm',
+                       'aarch64-darwin': 'macos-15'},
+            'forgejo': {'x86_64-linux': 'nix', 'aarch64-linux': 'braco'},
+        }
+        for forge, native_runners in platforms.items():
+            with tempfile.TemporaryDirectory() as directory:
+                jobs = self.generated(forge, directory, native_runners)['release-channels']['jobs']
+            for system, native_runner in native_runners.items():
+                suffix = system.replace('-', '_')
+                with self.subTest(forge=forge, system=system):
+                    self.assertEqual(jobs['build_' + suffix]['runs-on'], native_runner)
+                    retention = jobs['retain_' + suffix]
+                    self.assertEqual(retention['runs-on'], 'ubuntu-24.04' if forge == 'github' else 'nix')
+                    self.assertTrue(any('retain --system ' + system in step.get('run', '')
+                                        for step in retention['steps']))
+                    if forge == 'forgejo':
+                        self.assertIn('container', retention)
 
 
 if __name__ == '__main__':
