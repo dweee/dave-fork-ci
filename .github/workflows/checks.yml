@@ -22,3 +22,5 @@ jobs:
           python3 ci/test-push-attic.py
           python3 ci/test-transfer-attic.py
           python3 ci/test-public-closure.py
+          python3 ci/test-release-channel.py
+          python3 ci/test-update-automation.py
