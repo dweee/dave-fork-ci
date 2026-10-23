@@ -217,4 +217,31 @@ class RetentionSelection(unittest.TestCase):
             self.assertEqual(set(records),set(revisions[-3:]+[revisions[0]]))
 
 
+@unittest.skipUnless(shutil.which('nix'), 'Nix required for whole-flake evaluation fixture')
+class WholeFlakeEvaluation(unittest.TestCase):
+    def test_cache_roots_and_checks_are_selected_from_the_complete_flake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)/'source'
+            repo.mkdir()
+            def git(*args):
+                return subprocess.check_output(['git','-C',str(repo),*args],stderr=subprocess.PIPE,text=True).strip()
+            git('init','-q','-b','main')
+            git('config','user.name','Fixture')
+            git('config','user.email','fixture@example.invalid')
+            (repo/'flake.nix').write_text('''{ outputs = { self }: {
+              packages.x86_64-linux.default = { wrongDefault = true; };
+              packages.x86_64-linux.fixture = {
+                outputs = [ "out" ]; out.outPath = "'''+A+'''";
+              };
+              checks.x86_64-linux.smoke = 1;
+            }; }''')
+            git('add','flake.nix')
+            git('commit','-qm','Fixture whole flake')
+            flake = 'git+'+repo.as_uri()+'?rev='+git('rev-parse','HEAD')
+            rules = {'targets':{'x86_64-linux':[{'attribute':'packages.x86_64-linux.fixture'}]}}
+            self.assertEqual(c.evaluated_roots(rules,'x86_64-linux',flake=flake),[A])
+            self.assertEqual(c.native_check_names(flake,'x86_64-linux',dict(os.environ)),['smoke'])
+            self.assertEqual(c.native_check_names(flake,'aarch64-linux',dict(os.environ)),[])
+
+
 if __name__ == '__main__': unittest.main()

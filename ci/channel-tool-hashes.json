@@ -1,6 +1,6 @@
 {
-  "release-channel.py": "e0c3d9b184aa557cfffd693a571b102a82ea882e1079c196002a507fd9c334c4",
-  "test-release-channel.py": "adb372c7b95c521df64cf74c7b36e3be0c43abeeee463edcbd3c5a4a36a2f106",
+  "release-channel.py": "1f1c2a078d94d1351b00c98f970cc7b0642bfa605ccb06d20ed964bfb36dc412",
+  "test-release-channel.py": "fc470dbaa3ebdccd120bf9651a5a9b3f0a2d14baeee5fa94f56b754f6053e1b3",
   "update-inputs.py": "5f75aaa9f560b7261279cf026aa453e6b34c0a56870a56d9ad02f96199668d58",
   "update-monitor.py": "ff1867c18ef4f549a0d7f84eb828f6a3e44b1575d4d42113bca770ff06e09c74",
   "test-update-automation.py": "8c6fcb3f15695df6058c241b5fb1585a72b3eb6e955484931ea0db52a092d187",

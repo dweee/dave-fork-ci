@@ -261,11 +261,17 @@ def evaluated_roots(rules, system, flake=None, expression=None, env=None):
     if expression:
         args = ['--impure', '--expr', '('+apply+') ('+expression+')']
     else:
-        args = [flake+'#', '--apply', apply]
+        args = ['--expr', '('+apply+') (builtins.getFlake '+json.dumps(flake)+')']
     roots = json.loads(run('nix', 'eval', '--json', *args, *FLAGS, *NO_BUILD, env=env))
     if not roots or any(not STORE.fullmatch(p) for p in roots):
         raise ValueError('Missing evaluated release outputs')
     return sorted(set(roots))
+
+
+def native_check_names(flake, system, env):
+    # An empty flake fragment selects its default package, not its outputs.
+    expression = 'builtins.attrNames ((builtins.getFlake '+json.dumps(flake)+').checks.'+system+' or {})'
+    return json.loads(run('nix', 'eval', '--json', '--expr', expression, *FLAGS, env=env))
 
 
 def audit(rules, sha, system, record, env, flake=None, expression=None):
@@ -389,8 +395,7 @@ def build(system):
         # All native flake checks are required, even when the package job would
         # otherwise reuse a cached output. Missing checks are an empty set.
         phase('build-native-checks')
-        expression = 'f: builtins.attrNames (f.checks.' + system + ' or {})'
-        checks = json.loads(run('nix', 'eval', '--json', flake + '#', '--apply', expression, *FLAGS, env=env))
+        checks = native_check_names(flake, system, env)
         for name in checks:
             if not re.fullmatch(r'[\w+-]+', name):
                 raise ValueError('Invalid check name')
