@@ -126,7 +126,9 @@ def install(args):
                 {'name': 'Remove cache reader', 'if': expr('always()'),
                  'run': python('ci/configure-attic-read.py --cleanup')}]
             jobs[key] = native
-            retention = job(native['runs-on'])
+            # Retention disables builders and only evaluates paths/reads NARs.
+            # Keep scarce native runners available for actual platform builds.
+            retention = job()
             retention['if'] = expr("(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && " + trusted_ref)
             retention['steps'] = checkout()+bootstrap()+[
                 {'name': 'Configure job-local private reader',
