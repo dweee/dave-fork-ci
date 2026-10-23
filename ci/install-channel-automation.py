@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 CHECKOUT = 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
 INSTALL = 'nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c'
 HELPERS = ['release-channel.py', 'test-release-channel.py', 'update-inputs.py',
-           'update-monitor.py', 'test-update-automation.py', 'automation-forge.py']
+           'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-attic-read.py']
 
 
 def expr(value):
@@ -39,7 +39,7 @@ def install(args):
     for name in HELPERS:
         if ci / name != HERE / name:
             shutil.copy2(HERE / name, ci / name)
-    for name in ['push-attic.py', 'configure-attic-read.py']:
+    for name in ['push-attic.py']:
         if not (ci / name).exists():
             shutil.copy2(HERE / name, ci / name)
     (ci / 'channels.json').write_text(json.dumps(config, indent=2)+'\n')
