@@ -162,6 +162,17 @@ def metadata(entry):
             for k in ['narHash', 'narSize', 'references']}
 
 
+def report_metadata_difference(path, roots, origin, expected, actual, recheck=False):
+    # Only fixed field labels and one-way digests leave the verifier. Paths,
+    # reference lists, credentials and raw remote metadata remain suppressed.
+    detail = {'root': path in roots, 'origin': 'attic' if origin == CACHE else 'upstream',
+              'read': 'fresh' if recheck else 'initial',
+              'fields': [k for k in ['narHash', 'narSize', 'references'] if expected[k] != actual[k]],
+              'pathDigest': hashlib.sha256(path.encode()).hexdigest(),
+              'expectedMetadataDigest': digest(expected), 'actualMetadataDigest': digest(actual)}
+    print('Cache metadata mismatch: ' + json.dumps(detail, sort_keys=True), flush=True)
+
+
 def remote_env(env, directory):
     # Isolated metadata DB; no success from the builder's local store/cache DB.
     return dict(env, XDG_CACHE_HOME=str(directory), NIX_CACHE_HOME=str(directory),
@@ -194,7 +205,9 @@ def verify(roots, expected, env):
                     continue
                 if remote.get(path) is None:
                     continue
-                if metadata(remote[path]) != entry:
+                actual = metadata(remote[path])
+                if actual != entry:
+                    report_metadata_difference(path, roots, origin, entry, actual)
                     raise ValueError('Published metadata differs from build')
                 # Reads NAR bytes, verifies hash and signature; no --no-contents,
                 # local-store fallback, source build or metadata-only success.
@@ -206,7 +219,9 @@ def verify(roots, expected, env):
     with tempfile.TemporaryDirectory(prefix='channel-recheck-') as directory:
         reader = remote_env(env, directory)
         for path, origin in origins.items():
-            if metadata(info([path], reader, origin).get(path)) != expected[path]:
+            actual = metadata(info([path], reader, origin).get(path))
+            if actual != expected[path]:
+                report_metadata_difference(path, roots, origin, expected[path], actual, recheck=True)
                 raise ValueError('Publication changed during verification')
     return digest({'roots': sorted(roots), 'metadata': expected})
 
@@ -246,11 +261,17 @@ def evaluated_roots(rules, system, flake=None, expression=None, env=None):
     if expression:
         args = ['--impure', '--expr', '('+apply+') ('+expression+')']
     else:
-        args = [flake+'#', '--apply', apply]
+        args = ['--expr', '('+apply+') (builtins.getFlake '+json.dumps(flake)+')']
     roots = json.loads(run('nix', 'eval', '--json', *args, *FLAGS, *NO_BUILD, env=env))
     if not roots or any(not STORE.fullmatch(p) for p in roots):
         raise ValueError('Missing evaluated release outputs')
     return sorted(set(roots))
+
+
+def native_check_names(flake, system, env):
+    # An empty flake fragment selects its default package, not its outputs.
+    expression = 'builtins.attrNames ((builtins.getFlake '+json.dumps(flake)+').checks.'+system+' or {})'
+    return json.loads(run('nix', 'eval', '--json', '--expr', expression, *FLAGS, env=env))
 
 
 def audit(rules, sha, system, record, env, flake=None, expression=None):
@@ -374,8 +395,7 @@ def build(system):
         # All native flake checks are required, even when the package job would
         # otherwise reuse a cached output. Missing checks are an empty set.
         phase('build-native-checks')
-        expression = 'f: builtins.attrNames (f.checks.' + system + ' or {})'
-        checks = json.loads(run('nix', 'eval', '--json', flake + '#', '--apply', expression, *FLAGS, env=env))
+        checks = native_check_names(flake, system, env)
         for name in checks:
             if not re.fullmatch(r'[\w+-]+', name):
                 raise ValueError('Invalid check name')
