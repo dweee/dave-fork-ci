@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -19,6 +21,21 @@ ENTRY = {'narHash': 'sha256-'+'A'*43+'=', 'narSize': 12, 'references': []}
 
 
 class Gates(unittest.TestCase):
+    def test_metadata_mismatch_reports_fields_and_digests_without_paths(self):
+        path = '/nix/store/' + 'a'*32 + '-fixture-secret'
+        actual = dict(ENTRY, narSize=13)
+        output = io.StringIO()
+        with patch.object(c, 'info', return_value={path:actual}), contextlib.redirect_stdout(output):
+            with self.assertRaises(ValueError): c.verify([path], {path:ENTRY}, {})
+        report = json.loads(output.getvalue().split(': ', 1)[1])
+        self.assertEqual(report['fields'], ['narSize'])
+        self.assertTrue(report['root'])
+        self.assertEqual(report['origin'], 'attic')
+        self.assertEqual(report['expectedMetadataDigest'], c.digest(ENTRY))
+        self.assertNotEqual(report['expectedMetadataDigest'], report['actualMetadataDigest'])
+        self.assertNotIn('/nix/store', output.getvalue())
+        self.assertNotIn('fixture-secret', output.getvalue())
+
     def test_command_failure_does_not_echo_secrets_or_store_paths(self):
         diagnostic = 'HTTP error 403 at /nix/store/' + 'a'*32 + '-private with token fixture-secret'
         result = subprocess.CompletedProcess(['nix'], 1, stdout='', stderr=diagnostic)

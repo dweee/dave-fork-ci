@@ -162,6 +162,17 @@ def metadata(entry):
             for k in ['narHash', 'narSize', 'references']}
 
 
+def report_metadata_difference(path, roots, origin, expected, actual, recheck=False):
+    # Only fixed field labels and one-way digests leave the verifier. Paths,
+    # reference lists, credentials and raw remote metadata remain suppressed.
+    detail = {'root': path in roots, 'origin': 'attic' if origin == CACHE else 'upstream',
+              'read': 'fresh' if recheck else 'initial',
+              'fields': [k for k in ['narHash', 'narSize', 'references'] if expected[k] != actual[k]],
+              'pathDigest': hashlib.sha256(path.encode()).hexdigest(),
+              'expectedMetadataDigest': digest(expected), 'actualMetadataDigest': digest(actual)}
+    print('Cache metadata mismatch: ' + json.dumps(detail, sort_keys=True), flush=True)
+
+
 def remote_env(env, directory):
     # Isolated metadata DB; no success from the builder's local store/cache DB.
     return dict(env, XDG_CACHE_HOME=str(directory), NIX_CACHE_HOME=str(directory),
@@ -194,7 +205,9 @@ def verify(roots, expected, env):
                     continue
                 if remote.get(path) is None:
                     continue
-                if metadata(remote[path]) != entry:
+                actual = metadata(remote[path])
+                if actual != entry:
+                    report_metadata_difference(path, roots, origin, entry, actual)
                     raise ValueError('Published metadata differs from build')
                 # Reads NAR bytes, verifies hash and signature; no --no-contents,
                 # local-store fallback, source build or metadata-only success.
@@ -206,7 +219,9 @@ def verify(roots, expected, env):
     with tempfile.TemporaryDirectory(prefix='channel-recheck-') as directory:
         reader = remote_env(env, directory)
         for path, origin in origins.items():
-            if metadata(info([path], reader, origin).get(path)) != expected[path]:
+            actual = metadata(info([path], reader, origin).get(path))
+            if actual != expected[path]:
+                report_metadata_difference(path, roots, origin, expected[path], actual, recheck=True)
                 raise ValueError('Publication changed during verification')
     return digest({'roots': sorted(roots), 'metadata': expected})
 
