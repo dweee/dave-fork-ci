@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
 from pathlib import Path
 import json
 import shutil
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 
 def load(name):
@@ -21,6 +23,38 @@ m = load('update-monitor')
 
 
 class Updates(unittest.TestCase):
+    def test_renamed_repository_redirect_keeps_auth_on_the_same_api_host(self):
+        source = 'https://api.github.com/repos/old/name/releases/latest'
+        target = 'https://api.github.com/repositories/123/releases/latest'
+        opener = Mock()
+        opener.open.side_effect = [HTTPError(source, 301, 'Moved', {'Location': target}, None),
+                                   io.BytesIO(b'{"tag_name":"v2"}')]
+        with patch('urllib.request.build_opener', return_value=opener), patch.dict(m.os.environ, {'GH_TOKEN':'fixture'}):
+            self.assertEqual(m.fetch(source), {'tag_name':'v2'})
+        requests = [call.args[0] for call in opener.open.call_args_list]
+        self.assertEqual([r.full_url for r in requests], [source, target])
+        self.assertEqual([r.get_header('Authorization') for r in requests], ['Bearer fixture']*2)
+
+    def test_redirects_cannot_send_api_credentials_to_other_origins(self):
+        source = 'https://api.github.com/repos/old/name/releases/latest'
+        for target in ['https://example.invalid/release', 'https://git.monke.fail/api/v1/release',
+                       'http://api.github.com/release', 'https://user@api.github.com/release',
+                       'https://api.github.com:444/release']:
+            with self.subTest(target=target):
+                opener = Mock()
+                opener.open.side_effect = HTTPError(source, 302, 'Moved', {'Location':target}, None)
+                with patch('urllib.request.build_opener', return_value=opener), self.assertRaises(ValueError):
+                    m.fetch(source)
+                self.assertEqual(opener.open.call_count, 1)
+
+    def test_api_redirect_loop_is_bounded(self):
+        source = 'https://api.github.com/repos/old/name/releases/latest'
+        opener = Mock()
+        opener.open.side_effect = HTTPError(source, 301, 'Moved', {'Location':source}, None)
+        with patch('urllib.request.build_opener', return_value=opener), self.assertRaises(ValueError):
+            m.fetch(source)
+        self.assertEqual(opener.open.call_count, 4)
+
     def test_urls_pin_git_revision_and_preserve_ref(self):
         self.assertEqual(u.pin_url({'type': 'git', 'url': 'https://git.monke.fail/d/tool',
                                    'ref': 'tested', 'rev': 'a'*40}),
