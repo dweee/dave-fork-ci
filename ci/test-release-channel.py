@@ -19,6 +19,22 @@ ENTRY = {'narHash': 'sha256-'+'A'*43+'=', 'narSize': 12, 'references': []}
 
 
 class Gates(unittest.TestCase):
+    def test_command_failure_does_not_echo_secrets_or_store_paths(self):
+        diagnostic = 'HTTP error 403 at /nix/store/' + 'a'*32 + '-private with token fixture-secret'
+        result = subprocess.CompletedProcess(['nix'], 1, stdout='', stderr=diagnostic)
+        with patch.object(c.subprocess, 'run', return_value=result):
+            with self.assertRaises(c.CommandFailure) as raised: c.run('nix', 'eval')
+        self.assertEqual(str(raised.exception), 'authorization (exit 1)')
+        self.assertNotIn('fixture-secret', str(raised.exception))
+        self.assertNotIn('/nix/store', str(raised.exception))
+
+    def test_fixed_diagnostic_categories_cover_cache_and_source_failures(self):
+        self.assertEqual(c.failure_category('hash mismatch in fixed-output derivation'), 'source-hash-mismatch')
+        self.assertEqual(c.failure_category('NAR hash mismatch'), 'cache-integrity')
+        self.assertEqual(c.failure_category('path lacks a signature by a trusted key'), 'cache-signature')
+        self.assertEqual(c.failure_category('HTTP/2 framing error'), 'transport')
+        self.assertEqual(c.failure_category('attribute xyz missing'), 'evaluation')
+
     def test_truncated_nar_blocks_release(self):
         with patch.object(c, 'info', return_value={A: ENTRY}), patch.object(c, 'run', side_effect=RuntimeError('truncated')):
             with self.assertRaises(RuntimeError): c.verify([A], {A: ENTRY}, {})
