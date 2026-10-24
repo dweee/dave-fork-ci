@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import importlib.util
+from contextlib import redirect_stderr, redirect_stdout
 import io
 from pathlib import Path
 import json
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
@@ -20,6 +22,7 @@ def load(name):
 
 u = load('update-inputs')
 m = load('update-monitor')
+a = load('automation-forge')
 
 
 class Updates(unittest.TestCase):
@@ -98,6 +101,57 @@ class Updates(unittest.TestCase):
     def test_file_hash_reader_rejects_credentialed_and_unreviewed_hosts(self):
         for url in ['https://example.invalid/a.yaml', 'https://token@raw.githubusercontent.com/o/r/a.yaml']:
             with self.subTest(url=url), self.assertRaises(ValueError): m.file_hash(url)
+
+
+
+
+class FailureDiagnostics(unittest.TestCase):
+    def test_input_failure_classifies_subprocess_error_without_output_or_arguments(self):
+        secret = 'fixture-sensitive-auth-value'
+        result = subprocess.CompletedProcess(['nix', secret], 9, stdout='',
+            stderr='HTTP 401 at https://'+secret+'@example.invalid/private/path')
+        output, error = io.StringIO(), io.StringIO()
+        def update():
+            u.phase('lock-moving-inputs')
+            u.run('nix', secret)
+        with patch.object(u, 'update', side_effect=update), patch.object(u.subprocess, 'run', return_value=result), redirect_stdout(output), redirect_stderr(error):
+            self.assertEqual(u.main(), 1)
+        self.assertIn('lock-moving-inputs: authorization (exit 9)', error.getvalue())
+        self.assertNotIn(secret, output.getvalue()+error.getvalue())
+        self.assertNotIn('/private/path', output.getvalue()+error.getvalue())
+
+    def test_input_timeout_does_not_print_the_command(self):
+        secret = 'fixture-private-command-argument'
+        def update():
+            u.phase('validate-candidate')
+            u.run('nix', secret)
+        output, error = io.StringIO(), io.StringIO()
+        with patch.object(u, 'update', side_effect=update), patch.object(u.subprocess, 'run', side_effect=subprocess.TimeoutExpired(['nix',secret],1)), redirect_stdout(output), redirect_stderr(error):
+            self.assertEqual(u.main(), 1)
+        self.assertIn('validate-candidate: command deadline exceeded', error.getvalue())
+        self.assertNotIn(secret, output.getvalue()+error.getvalue())
+
+    def test_publication_reports_http_permission_failure_without_credentialed_url(self):
+        secret = 'fixture-sensitive-writer-value'
+        def publish(rules):
+            a.phase('create-input-pr')
+            raise HTTPError('https://'+secret+'@example.invalid',403,secret,None,None)
+        output, error = io.StringIO(), io.StringIO()
+        with patch.object(a, 'inputs', side_effect=publish), patch.object(sys, 'argv', ['automation-forge.py','inputs']), redirect_stdout(output), redirect_stderr(error):
+            self.assertEqual(a.main(), 1)
+        self.assertIn('create-input-pr: authorization (HTTP 403)', error.getvalue())
+        self.assertNotIn(secret, output.getvalue()+error.getvalue())
+
+    def test_unexpected_publication_error_hides_private_exception_text(self):
+        secret = '/private/fixture-sensitive-file'
+        def report(rules):
+            a.phase('read-monitor-report')
+            raise TypeError(secret)
+        output, error = io.StringIO(), io.StringIO()
+        with patch.object(a, 'report', side_effect=report), patch.object(sys, 'argv', ['automation-forge.py','report']), redirect_stdout(output), redirect_stderr(error):
+            self.assertEqual(a.main(), 1)
+        self.assertIn('read-monitor-report: validation-failed', error.getvalue())
+        self.assertNotIn(secret, output.getvalue()+error.getvalue())
 
 
 @unittest.skipUnless(shutil.which('nix'), 'Nix required for lock updater fixture')
