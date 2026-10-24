@@ -16,7 +16,8 @@ spec.loader.exec_module(installer)
 def matches(expression, event, ref):
     expression = expression.removeprefix('${{ ').removesuffix(' }}')
     expression = expression.replace('github.event_name', repr(event)).replace('github.ref', repr(ref))
-    return eval(expression.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}})
+    return eval(expression.replace('&&', ' and ').replace('||', ' or '),
+                {'__builtins__': {}, 'format': lambda pattern, value: pattern.format(value)})
 
 
 class ChannelWorkflowRefs(unittest.TestCase):
@@ -68,6 +69,24 @@ class ChannelWorkflowRefs(unittest.TestCase):
                     with self.subTest(job=name):
                         self.assertFalse(matches(job['if'], 'schedule', 'main'))
                         self.assertTrue(matches(job['if'], 'schedule', 'refs/heads/main'))
+
+    def test_pr_regressions_do_not_share_or_replace_pending_trusted_releases(self):
+        for forge in ['github', 'forgejo']:
+            with tempfile.TemporaryDirectory() as directory:
+                workflow = self.generated(forge, directory)['release-channels']
+            concurrency = workflow['concurrency']
+            group = concurrency['group']
+            trusted = {matches(group, event, ref) for event in ['push', 'schedule', 'workflow_dispatch']
+                       for ref in ['main', 'refs/heads/main']}
+            # Preserve the old group so a release started before this update
+            # still excludes a newly dispatched trusted publisher.
+            self.assertEqual(trusted, {'verified-release-channels'})
+            first = matches(group, 'pull_request', 'refs/pull/1/merge')
+            second = matches(group, 'pull_request', 'refs/pull/2/merge')
+            self.assertNotEqual(first, second)
+            self.assertNotIn(first, trusted)
+            self.assertNotIn(second, trusted)
+            self.assertFalse(concurrency['cancel-in-progress'])
 
     def test_cache_audits_use_general_linux_runner_and_builds_remain_native(self):
         platforms = {

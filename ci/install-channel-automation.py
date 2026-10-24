@@ -157,7 +157,11 @@ def install(args):
             'schedule': [{'cron': '43 3 * * *'}],
             'workflow_dispatch': {'inputs': {'channel': {'type': 'choice', 'options': ['tested', 'stable'], 'default': 'tested'},
                                              'revision': {'type': 'string', 'description': 'Exact tested commit for stable; empty uses the event commit', 'required': False}}}},
-            'permissions': {'contents': 'read'}, 'concurrency': {'group': 'verified-release-channels', 'cancel-in-progress': False}, 'jobs': jobs})
+            'permissions': {'contents': 'read'}, 'concurrency': {
+                # Keep the existing trusted lock during rollout. PR-only
+                # regressions neither publish nor wait behind native releases.
+                'group': expr("github.event_name == 'pull_request' && format('verified-release-pr-{0}', github.ref) || 'verified-release-channels'"),
+                'cancel-in-progress': False}, 'jobs': jobs})
     monitor = job()
     monitor['if'] = expr(trusted_ref)
     monitor['timeout-minutes'] = 120
