@@ -154,6 +154,34 @@ class FailureDiagnostics(unittest.TestCase):
         self.assertNotIn(secret, output.getvalue()+error.getvalue())
 
 
+class ImportFromDerivation(unittest.TestCase):
+    def test_instantiation_loads_whole_flake_for_the_builder_system(self):
+        with patch.object(u, 'ROOT', Path('/work/repo')):
+            expression = u.instantiation_expression('x86_64-linux')
+        # An empty flake fragment would select only the default package.
+        self.assertIn('builtins.getFlake "git+file:///work/repo"', expression)
+        self.assertIn('.x86_64-linux or {}', expression)
+        self.assertIn('drvs "packages"', expression)
+        self.assertIn('drvs "checks"', expression)
+
+    def test_unexpected_system_is_not_interpolated(self):
+        with self.assertRaises(ValueError):
+            u.instantiation_expression('x86_64-linux; builtins.exec')
+
+    @unittest.skipUnless(shutil.which('nix'), 'Nix required for instantiation fixture')
+    def test_expression_evaluates_flakes_without_packages_or_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=root, check=True)
+            (root/'flake.nix').write_text('{ outputs = {self}: {}; }')
+            subprocess.run(['git', 'add', 'flake.nix'], cwd=root, check=True)
+            with patch.object(u, 'ROOT', root):
+                expression = u.instantiation_expression('x86_64-linux')
+            value = subprocess.run(['nix', 'eval', '--impure', '--json', '--expr', expression],
+                                   cwd=root, text=True, capture_output=True, check=True).stdout
+            self.assertEqual(json.loads(value), {'packages': {}, 'checks': {}})
+
+
 @unittest.skipUnless(shutil.which('nix'), 'Nix required for lock updater fixture')
 class RealInputMovement(unittest.TestCase):
     def test_branch_movement_is_written_by_nix_as_an_exact_pin(self):

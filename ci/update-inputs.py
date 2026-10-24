@@ -65,6 +65,20 @@ def root_node(lock, name):
     return lock['nodes'][key]
 
 
+def instantiation_expression(system):
+    # `flake check --no-build` evaluates read-only, so an import-from-derivation
+    # source absent from a fresh runner store is "not valid". Instantiating this
+    # system's packages and checks first realises only those IFD inputs. An empty
+    # flake fragment would select the default package, so load the whole flake.
+    if not re.fullmatch(r'[a-z0-9_]+-[a-z0-9_]+', system):
+        raise ValueError('Unexpected builder system')
+    # The same Git view `nix flake check .` evaluates, including any declared
+    # self.submodules setting.
+    return ('let f = builtins.getFlake ' + json.dumps('git+file://' + str(ROOT)) + '; '
+            'drvs = output: builtins.mapAttrs (_: p: p.drvPath) ((f.${output} or {}).' + system + ' or {}); '
+            'in { packages = drvs "packages"; checks = drvs "checks"; }')
+
+
 def update():
     phase('inspect-tracking-inventory')
     config = json.loads((ROOT / 'ci/tracking-inputs.json').read_text())
@@ -126,6 +140,9 @@ def update():
     if alignment:
         phase('validate-catalog-alignment')
         run(sys.executable, 'scripts/check-dave-packages-pin.py')
+    phase('instantiate-import-from-derivation')
+    run('nix', 'eval', '--impure', '--json', '--option', 'accept-flake-config', 'false',
+        '--expr', instantiation_expression(run('nix', 'eval', '--impure', '--raw', '--expr', 'builtins.currentSystem')))
     phase('validate-candidate')
     run('nix', 'flake', 'check', '--no-build', '--option', 'accept-flake-config', 'false',
         '--no-write-lock-file', '--no-update-lock-file')
