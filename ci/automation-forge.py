@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,6 +89,18 @@ def report(rules):
     print('Updated the repository version-monitoring issue')
 
 
+def branch_exists(rules, prefix, branch):
+    # The branch name is the staged tree hash, so an existing branch already holds exactly these pins.
+    try:
+        api(rules, 'GET', prefix + '/branches/' + quote(branch, safe='/'))
+    except HTTPError as error:
+        error.close()
+        if error.code == 404:
+            return False
+        raise
+    return True
+
+
 def inputs(rules):
     phase('inspect-input-diff')
     changed = channel.run('git', 'diff', '--name-only', '--', 'flake.nix', 'flake.lock', 'nix/forks.json')
@@ -105,14 +118,17 @@ def inputs(rules):
     if any(p.get('head', {}).get('ref') == branch for p in prs):
         print('An update PR already exists for this input set')
         return
-    phase('commit-input-pins')
-    channel.run('git', '-c', 'user.name=Input updater', '-c', 'user.email=input-updater@monke.fail',
-                'commit', '-m', 'Update tracked flake inputs to exact revisions')
-    with channel.tempfile.TemporaryDirectory(prefix='input-push-') as directory:
-        with channel.build_environment(dict(os.environ, CHANNEL_TOKEN=os.environ['AUTOMATION_TOKEN'])):
-            env = channel.git_env(directory)
-            phase('push-input-branch')
-            channel.run('git', '-c', 'credential.helper=', 'push', rules['remote'], 'HEAD:refs/heads/' + branch, env=env)
+    if branch_exists(rules, prefix, branch):
+        print('Reusing the already published branch for this input set')
+    else:
+        phase('commit-input-pins')
+        channel.run('git', '-c', 'user.name=Input updater', '-c', 'user.email=input-updater@monke.fail',
+                    'commit', '-m', 'Update tracked flake inputs to exact revisions')
+        with channel.tempfile.TemporaryDirectory(prefix='input-push-') as directory:
+            with channel.build_environment(dict(os.environ, CHANNEL_TOKEN=os.environ['AUTOMATION_TOKEN'])):
+                env = channel.git_env(directory)
+                phase('push-input-branch')
+                channel.run('git', '-c', 'credential.helper=', 'push', rules['remote'], 'HEAD:refs/heads/' + branch, env=env)
     body = attribution(rules) + ('Track the configured channels/branches while retaining exact source and lock pins. '
         'Nix resolved the lockfile and `nix flake check --no-build` passed. '
         'Required native release builds, cache uploads and independent cache reads still gate channel promotion. '
