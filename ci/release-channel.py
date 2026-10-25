@@ -307,12 +307,17 @@ def native_check_names(flake, system, env):
 
 
 def audit(rules, sha, system, record, env, flake=None, expression=None):
+    phase('validate-retained-proof')
     if (record.get('commit') != sha or record.get('policy') != digest(rules)
             or record.get('activationAuthorized') is not False):
         raise ValueError('Release source/policy differs from immutable proof')
+    phase('evaluate-retained-roots')
     roots = evaluated_roots(rules, system, flake, expression, env)
+    phase('discover-retained-closure')
     expected = remote_closure(roots, env)
+    phase('verify-retained-cache')
     closure = verify(roots, expected, env)
+    phase('compare-retained-proof')
     proof = digest({'commit': sha, 'policy': digest(rules), 'system': system, 'closure': closure})
     if record['proofs'].get(system) != proof:
         raise ValueError('Cached closure differs from the original build proof')
@@ -352,7 +357,9 @@ def release_refs(rules):
 
 
 def retain(system):
+    phase('inspect-retention-policy')
     rules = policy()
+    phase('read-release-ledgers')
     records = release_refs(rules)
     env = {k:v for k,v in os.environ.items() if k not in {'ATTIC_TOKEN','CHANNEL_TOKEN','SOURCE_TOKEN','GITHUB_TOKEN','GH_TOKEN'}}
     for sha, record in records.items():
@@ -363,16 +370,20 @@ def retain(system):
             with build_environment(dict(os.environ, CHANNEL_TOKEN=token)):
                 reader = git_env(directory)
             tree = str(Path(directory)/'source')
+            phase('fetch-retained-source')
             run('git', 'init', tree)
             run('git', '-C', tree, 'fetch', rules['remote'], sha, env=reader)
             run('git', '-C', tree, 'checkout', '--detach', 'FETCH_HEAD')
+            phase('inspect-retained-policy')
             historical = json.loads((Path(tree)/'ci/channels.json').read_text())
             flake = 'git+file://'+tree+'?rev='+sha
             if historical.get('submodules'):
+                phase('fetch-retained-submodules')
                 run('git', '-C', tree, 'submodule', 'update', '--init', '--recursive', env=reader)
                 flake += '&submodules=1'
             if system in historical['targets']:
                 audit(historical, sha, system, record, env, flake=flake)
+    phase('complete-retention')
     print('Cache retention verified for ' + str(len(records)) + ' advertised/recent source revisions')
 
 

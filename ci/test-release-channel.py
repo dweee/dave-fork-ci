@@ -236,6 +236,42 @@ class RealCache(unittest.TestCase):
                 self.assertIn(path, c.info([path], dict(c.os.environ)))
 
 
+class RetentionDiagnostics(unittest.TestCase):
+    def test_ledger_fetch_failure_reports_retention_phase(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['release-channel.py', 'retain', '--system', 'x86_64-linux']), \
+             patch.object(c, 'policy', return_value={}), \
+             patch.object(c, 'release_refs', side_effect=c.CommandFailure('transport (exit 128)')), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            self.assertEqual(c.main(), 1)
+        self.assertIn('failed during read-release-ledgers: transport (exit 128)', output.getvalue())
+        self.assertIn('the previous channel is retained', output.getvalue())
+
+    def test_retained_audit_failures_report_the_operation_without_private_values(self):
+        rules = {'targets': {'x86_64-linux': []}}
+        sha = 'a'*40
+        record = {'commit': sha, 'policy': c.digest(rules), 'activationAuthorized': False,
+                  'proofs': {'x86_64-linux': 'b'*64}}
+        failures = [('evaluated_roots', 'evaluate-retained-roots'),
+                    ('remote_closure', 'discover-retained-closure'),
+                    ('verify', 'verify-retained-cache')]
+        for operation, expected_phase in failures:
+            with self.subTest(operation=operation):
+                output = io.StringIO()
+                with patch.object(sys, 'argv', ['release-channel.py', 'retain', '--system', 'x86_64-linux']), \
+                     patch.object(c, 'retain', side_effect=lambda system: c.audit(rules, sha, system, record, {})), \
+                     patch.object(c, 'evaluated_roots', return_value=[A]), \
+                     patch.object(c, 'remote_closure', return_value={A: ENTRY}), \
+                     patch.object(c, 'verify', return_value='c'*64), \
+                     patch.object(c, operation, side_effect=c.CommandFailure('command-failed (exit 4)')), \
+                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                    self.assertEqual(c.main(), 1)
+                self.assertIn('failed during '+expected_phase+': command-failed (exit 4)', output.getvalue())
+                self.assertIn('the previous channel is retained', output.getvalue())
+                self.assertNotIn('/nix/store', output.getvalue())
+                self.assertNotIn(sha, output.getvalue())
+
+
 class RetentionSelection(unittest.TestCase):
     def test_advertised_old_stable_and_three_recent_releases_are_kept(self):
         with tempfile.TemporaryDirectory() as directory:
