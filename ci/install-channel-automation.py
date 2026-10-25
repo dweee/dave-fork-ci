@@ -178,7 +178,9 @@ def install(args):
         updater['if'] = expr(trusted_ref)
         updater['timeout-minutes'] = 120
         updater['steps'] = checkout()+bootstrap()+[
-            {'name': 'Resolve every tracked input and validate the exact candidate', 'run': python('ci/update-inputs.py')},
+            {'name': 'Resolve every tracked input and validate the exact candidate',
+             'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GITHUB_READ_TOKEN')},
+             'run': python('ci/update-inputs.py')},
             {'name': 'Open a review PR for changed pins', 'env': {'AUTOMATION_TOKEN': expr('secrets.UPDATE_TOKEN || github.token')},
              'run': python('ci/automation-forge.py inputs')}]
         jobs['inputs'] = updater
