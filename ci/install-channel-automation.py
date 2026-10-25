@@ -166,7 +166,7 @@ def install(args):
     monitor['if'] = expr(trusted_ref)
     monitor['timeout-minutes'] = 120
     monitor['steps'] = checkout()+bootstrap()+[
-        {'name': 'Monitor manual package/file pins', 'id': 'monitor', 'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GITHUB_READ_TOKEN'),
+        {'name': 'Monitor manual package/file pins', 'id': 'monitor', 'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GH_READ_TOKEN'),
                     'MONITOR_TOKEN': expr('github.token') if not github else ''},
          'run': python('ci/update-monitor.py')},
         {'name': 'Maintain one version monitoring issue', 'if': expr('always()'),
@@ -179,7 +179,7 @@ def install(args):
         updater['timeout-minutes'] = 120
         updater['steps'] = checkout()+bootstrap()+[
             {'name': 'Resolve every tracked input and validate the exact candidate',
-             'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GITHUB_READ_TOKEN')},
+             'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GH_READ_TOKEN')},
              'run': python('ci/update-inputs.py')},
             {'name': 'Open a review PR for changed pins', 'env': {'AUTOMATION_TOKEN': expr('secrets.UPDATE_TOKEN || github.token')},
              'run': python('ci/automation-forge.py inputs')}]
@@ -228,7 +228,7 @@ Required repository configuration:
 - Forgejo requires the existing native `nix` and `braco` Linux runners. Flakey
   and private inputs never go to GitHub. Already-public GitHub owning repos may
   use their existing native hosted Darwin builders independently.
-- Forgejo may supply `GITHUB_READ_TOKEN` for authenticated public metadata reads.
+- Forgejo may supply `GH_READ_TOKEN` for authenticated public metadata reads.
   Private input readers belong only on Forgejo; configure them before input jobs.
 
 The helper source lives in dave-fork-ci/ci. `channel-tool-hashes.json` identifies
