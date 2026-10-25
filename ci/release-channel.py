@@ -107,7 +107,7 @@ def policy():
     for system, targets in value['targets'].items():
         if system not in {'x86_64-linux', 'aarch64-linux', 'aarch64-darwin', 'x86_64-darwin'} or not targets:
             raise ValueError('Empty or unsupported required system')
-        for target in targets:
+        for index, target in enumerate(targets, 1):
             expression = (r'(?:nixosConfigurations|nixOnDroidConfigurations)\.[\w+-]+\..+'
                           if value.get('kind') == 'fleet' else r'(packages|cacheOnlyPackages)\.[\w+-]+\.[\w+-]+')
             if (not re.fullmatch(expression, target['attribute'])
@@ -417,8 +417,18 @@ def build(system):
     if set(systems) - set(rules.get('excludedSystems', [])) != set(rules['targets']):
         raise ValueError('Channel policy omits a supported system')
     roots = []
+    expected = {}
     with tempfile.TemporaryDirectory(prefix='channel-outputs-') as directory:
-        for target in targets:
+        phase('prepare-cache-publisher')
+        client = run('nix', 'build', '--inputs-from', flake, 'nixpkgs#attic-client', *FLAGS,
+                     '--no-link', '--print-out-paths', env=env)
+        if not STORE.fullmatch(client):
+            raise ValueError('Invalid publisher')
+        publish_env = dict(os.environ, ATTIC_BIN=client + '/bin/attic',
+                           ATTIC_ENDPOINT='https://attic.monke.fail', ATTIC_CACHE='flakey')
+        outputs = Path(directory) / 'outputs.txt'
+        for index, target in enumerate(targets, 1):
+            print(f'Processing inventory target {index}/{len(targets)}', flush=True)
             attr = flake + '#' + target['attribute']
             phase('inspect-output-policy')
             if target['visibility'] == 'public':
@@ -434,7 +444,24 @@ def build(system):
                         '--print-out-paths', env=env).splitlines()
             if not paths or any(not STORE.fullmatch(p) or p.endswith('.drv') for p in paths):
                 raise ValueError('Missing built outputs')
+            target_closure = info(paths, env)
+            if rules['forge'] == 'github':
+                if target['visibility'] == 'public':
+                    module('public-closure.py').check_paths(list(target_closure))
+                elif target['visibility'] == 'cache-only':
+                    module('build-cache-only.py').check(list(target_closure))
+            for path, entry in target_closure.items():
+                if path in expected and metadata(expected[path]) != metadata(entry):
+                    raise ValueError('Inconsistent local closure metadata')
+                expected[path] = entry
+            # Keep completed closures as substitutes if a later target or
+            # native check fails. Channel promotion still requires the full
+            # inventory, checks and independent cache verification below.
+            outputs.write_text('\n'.join(paths) + '\n')
+            phase('upload-target-closure')
+            run(sys.executable, str(ROOT / 'ci/push-attic.py'), '--outputs', str(outputs), env=publish_env)
             roots.extend(paths)
+            print(f'Built and cached inventory target {index}/{len(targets)}', flush=True)
         # All native flake checks are required, even when the package job would
         # otherwise reuse a cached output. Missing checks are an empty set.
         phase('build-native-checks')
@@ -445,29 +472,8 @@ def build(system):
             run('nix', 'build', flake + '#checks.' + system + '.' + name, *FLAGS, '--no-link', env=env)
         roots = sorted(set(roots))
         phase('inspect-built-closure')
-        expected = info(roots, env)
-        phase('enforce-publication-policy')
-        if rules['forge'] == 'github':
-            public = [t for t in targets if t['visibility'] == 'public']
-            # Runtime guards are also applied by the public builder. A combined
-            # closure can contain approved cache-only packages; never export it.
-            for target in public:
-                paths = run('nix', 'path-info', flake + '#' + target['attribute'], *FLAGS, env=env).splitlines()
-                with build_environment(env):
-                    module('public-closure.py').runtime(paths)
-            if any(t['visibility'] == 'cache-only' for t in targets):
-                module('build-cache-only.py').check(list(expected))
-        outputs = Path(directory) / 'outputs.txt'
-        outputs.write_text('\n'.join(roots) + '\n')
-        phase('prepare-cache-publisher')
-        client = run('nix', 'build', '--inputs-from', flake, 'nixpkgs#attic-client', *FLAGS,
-                     '--no-link', '--print-out-paths', env=env)
-        if not STORE.fullmatch(client):
-            raise ValueError('Invalid publisher')
-        publish_env = dict(os.environ, ATTIC_BIN=client + '/bin/attic',
-                           ATTIC_ENDPOINT='https://attic.monke.fail', ATTIC_CACHE='flakey')
-        phase('upload-selected-closure')
-        run(sys.executable, str(ROOT / 'ci/push-attic.py'), '--outputs', str(outputs), env=publish_env)
+        if not roots or not expected or not set(roots) <= set(expected):
+            raise ValueError('Missing built output closure')
         phase('verify-remote-cache')
         proof = verify(roots, expected, env)
         phase('record-release-proof')
