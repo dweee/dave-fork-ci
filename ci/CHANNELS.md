@@ -3,6 +3,10 @@
 `main` (or the configured source branch) accepts development changes. `tested`
 advances only after the entire explicit native inventory and flake checks build,
 upload, and pass independent remote NAR content and signature verification.
+Each target closure is policy checked and uploaded as soon as it builds, so an
+interrupted run can reuse completed outputs. These partial cache entries do not
+advance a channel; promotion still waits for the full inventory, native checks,
+and independent verification.
 `stable` is an owner-dispatched selection of an immutable `tested-<commit>` tag;
 it repeats builds/checks/cache verification. Flakes continue to lock exact commits.
 Failed, skipped or missing platforms never advance a channel. Promotion uses
