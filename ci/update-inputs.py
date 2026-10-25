@@ -7,6 +7,7 @@ files are written exclusively by Nix. No merge, promotion or deployment.
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -27,14 +28,36 @@ def phase(label):
     print('Input update phase: ' + label, flush=True)
 
 
+def safe_detail(diagnostic, token=''):
+    # Last few Nix error lines, with credentials, URLs' userinfo and long output removed.
+    lines = [l.strip() for l in diagnostic.splitlines() if l.strip().startswith('error:')][-3:]
+    text = ' | '.join(lines)
+    if token:
+        text = text.replace(token, '***')
+    text = re.sub(r'(https?://)[^/@\s]+@', r'\1***@', text)
+    text = re.sub(r'\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+', '***', text)
+    return text[:300]
+
+
 def run(*args):
+    env = None
+    token = os.environ.get('GH_TOKEN', '')
+    if token:
+        # Authenticated GitHub API reads avoid the shared anonymous rate limit.
+        # The token travels in the environment, never on a command line.
+        env = dict(os.environ, NIX_CONFIG=os.environ.get('NIX_CONFIG', '') + '\naccess-tokens = github.com=' + token + '\n')
     try:
-        result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True, timeout=3600)
+        result = subprocess.run(args, cwd=ROOT, env=env, text=True, capture_output=True, timeout=3600)
     except subprocess.TimeoutExpired:
         raise channel.CommandFailure('command deadline exceeded') from None
     if result.returncode:
-        kind = channel.failure_category((result.stderr or '') + '\n' + (result.stdout or ''))
-        raise channel.CommandFailure(kind + ' (exit ' + str(result.returncode) + ')')
+        diagnostic = (result.stderr or '') + '\n' + (result.stdout or '')
+        kind = channel.failure_category(diagnostic)
+        message = kind + ' (exit ' + str(result.returncode) + ')'
+        detail = safe_detail(diagnostic, token)
+        if detail:
+            message += ': ' + detail
+        raise channel.CommandFailure(message)
     return result.stdout.strip()
 
 
