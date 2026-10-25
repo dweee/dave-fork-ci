@@ -58,6 +58,16 @@ def failure_category(diagnostic):
     return next((name for name, pattern in patterns if re.search(pattern, diagnostic, re.I)), 'command-failed')
 
 
+def safe_detail(diagnostic):
+    # Last few Nix error lines, with credentials, URL userinfo and long output removed.
+    lines = [l.strip() for l in diagnostic.splitlines() if l.strip().startswith('error:')][-3:]
+    text = ' | '.join(lines)
+    text = re.sub(r'/nix/store/[0-9a-z]{32}-\S*', '<store-path>', text)
+    text = re.sub(r'(https?://)[^/@\s]+@', r'\1***@', text)
+    text = re.sub(r'\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+', '***', text)
+    return text[:300]
+
+
 def run(*args, env=None):
     try:
         result = subprocess.run(args, cwd=ROOT, env=env, text=True, capture_output=True, timeout=6*3600)
@@ -65,9 +75,11 @@ def run(*args, env=None):
         raise CommandFailure('command deadline exceeded') from None
     if result.returncode:
         # Nix diagnostics may contain private paths or authenticated URLs. Emit
-        # only a fixed classification and the numeric status, never their text.
-        kind = failure_category((result.stderr or '') + '\n' + (result.stdout or ''))
-        raise CommandFailure(kind + ' (exit ' + str(result.returncode) + ')')
+        # the classification, the status and a redacted tail of Nix error lines.
+        diagnostic = (result.stderr or '') + '\n' + (result.stdout or '')
+        message = failure_category(diagnostic) + ' (exit ' + str(result.returncode) + ')'
+        detail = safe_detail(diagnostic)
+        raise CommandFailure(message + (': ' + detail if detail else ''))
     return result.stdout.strip()
 
 

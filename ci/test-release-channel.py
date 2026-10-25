@@ -46,6 +46,17 @@ class Gates(unittest.TestCase):
         self.assertNotIn('fixture-secret', str(raised.exception))
         self.assertNotIn('/nix/store', str(raised.exception))
 
+    def test_command_failure_detail_is_redacted(self):
+        diagnostic = ('building\nerror: unable to download \'https://user:fixture-secret@host/x\': '
+                      'HTTP error 503 for /nix/store/' + 'a'*32 + '-private ghp_abc123')
+        result = subprocess.CompletedProcess(['nix'], 1, stdout='', stderr=diagnostic)
+        with patch.object(c.subprocess, 'run', return_value=result):
+            with self.assertRaises(c.CommandFailure) as raised: c.run('nix', 'build')
+        text = str(raised.exception)
+        self.assertTrue(text.startswith('transport (exit 1): error: unable to download'))
+        for leak in ['fixture-secret', '/nix/store', 'ghp_abc123', 'private']:
+            self.assertNotIn(leak, text)
+
     def test_fixed_diagnostic_categories_cover_cache_and_source_failures(self):
         self.assertEqual(c.failure_category('hash mismatch in fixed-output derivation'), 'source-hash-mismatch')
         self.assertEqual(c.failure_category('NAR hash mismatch'), 'cache-integrity')
