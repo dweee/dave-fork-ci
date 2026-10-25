@@ -154,6 +154,17 @@ class FailureDiagnostics(unittest.TestCase):
         self.assertIn('validate-candidate: command deadline exceeded', error.getvalue())
         self.assertNotIn(secret, output.getvalue()+error.getvalue())
 
+    def test_existing_input_branch_is_reused_and_other_errors_propagate(self):
+        rules = {'forge': 'forgejo'}
+        with patch.object(a, 'api', return_value={'name': 'b'}) as call:
+            self.assertTrue(a.branch_exists(rules, '/repos/o/r', 'automation/input-updates-ab'))
+        self.assertEqual(call.call_args.args[2], '/repos/o/r/branches/automation/input-updates-ab')
+        with patch.object(a, 'api', side_effect=HTTPError('u', 404, 'm', None, None)):
+            self.assertFalse(a.branch_exists(rules, '/repos/o/r', 'x'))
+        with patch.object(a, 'api', side_effect=HTTPError('u', 403, 'm', None, None)):
+            with self.assertRaises(HTTPError):
+                a.branch_exists(rules, '/repos/o/r', 'x')
+
     def test_publication_reports_http_permission_failure_without_credentialed_url(self):
         secret = 'fixture-sensitive-writer-value'
         def publish(rules):
