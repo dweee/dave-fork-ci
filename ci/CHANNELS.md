@@ -38,7 +38,7 @@ Required repository configuration:
 - Forgejo requires the existing native `nix` and `braco` Linux runners. Flakey
   and private inputs never go to GitHub. Already-public GitHub owning repos may
   use their existing native hosted Darwin builders independently.
-- Forgejo may supply `GITHUB_READ_TOKEN` for authenticated public metadata reads.
+- Forgejo may supply `GH_READ_TOKEN` for authenticated public metadata reads.
   Private input readers belong only on Forgejo; configure them before input jobs.
 
 The helper source lives in dave-fork-ci/ci. `channel-tool-hashes.json` identifies
