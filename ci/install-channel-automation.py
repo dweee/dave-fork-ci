@@ -71,11 +71,12 @@ def install(args):
                         'git init -q .\ngit remote add origin "$SERVER/$REPO.git"\n'
                         'git -c http.extraHeader="Authorization: Basic $auth" fetch -q origin "$SHA"\n'
                         'git checkout -q --detach FETCH_HEAD\n'}]
-    def bootstrap():
+    def bootstrap(cores=1):
         if not github:
             return []
         return [{'uses': INSTALL, 'with': {'nix_version': '2.34.7', 'enable_kvm': False,
-                     'nix_conf': 'experimental-features = nix-command flakes\naccept-flake-config = false\nmax-jobs = 1\ncores = 1\n'}}]
+                     'nix_conf': 'experimental-features = nix-command flakes\naccept-flake-config = false\n'
+                                 'max-jobs = 1\ncores = '+str(cores)+'\n'}}]
     def job(runner=None):
         result = {'runs-on': runner or ('ubuntu-24.04' if github else 'nix'), 'timeout-minutes': 360}
         if not github:
@@ -116,7 +117,10 @@ def install(args):
                            'aarch64-darwin': 'darwin-aarch64', 'x86_64-darwin': 'darwin-x86_64'})[system])
             native.update(needs=['test'], outputs={'proof': expr('steps.release.outputs.proof')},
                           **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
-            native['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap()+[
+            # Keep derivations serial to bound memory, while allowing the
+            # x86 Linux builder to use every CPU assigned to its runner.
+            native['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(
+                cores=0 if system == 'x86_64-linux' else 1)+[
                 {'name': 'Configure job-local private cache reader',
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
                  'run': python('ci/configure-attic-read.py')},
