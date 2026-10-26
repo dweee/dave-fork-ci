@@ -159,8 +159,19 @@ class Gates(unittest.TestCase):
         rules = {'targets': {'aarch64-linux': []}}
         record = {'commit':'a'*40, 'policy':c.digest(rules), 'activationAuthorized':False,
                   'proofs':{'aarch64-linux':'b'*64}}
-        with patch.object(c, 'evaluated_roots', return_value=[A]), patch.object(c, 'remote_closure', return_value={A:ENTRY}), patch.object(c, 'verify', return_value='c'*64):
+        output = io.StringIO()
+        with patch.object(c, 'evaluated_roots', return_value=[A]), patch.object(c, 'remote_closure', return_value={A:ENTRY}), patch.object(c, 'verify', return_value='c'*64), contextlib.redirect_stdout(output):
             with self.assertRaises(ValueError): c.audit(rules,'a'*40,'aarch64-linux',record,{})
+        line = next(line for line in output.getvalue().splitlines() if line.startswith('Retained proof mismatch: '))
+        report = json.loads(line.split(': ', 1)[1])
+        self.assertEqual(report['commit'], 'a'*40)
+        self.assertEqual(report['system'], 'aarch64-linux')
+        self.assertEqual(report['expectedProof'], 'b'*64)
+        self.assertNotEqual(report['expectedProof'], report['actualProof'])
+        self.assertEqual(report['rootCount'], 1)
+        self.assertEqual(report['closurePathCount'], 1)
+        self.assertEqual(report['rootsDigest'], c.digest([A]))
+        self.assertNotIn('/nix/store', output.getvalue())
 
     def test_cache_audit_evaluation_disables_builders(self):
         rules = {'targets': {'aarch64-linux':[{'attribute':'packages.aarch64-linux.example'}]}}
