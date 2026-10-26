@@ -320,6 +320,14 @@ def audit(rules, sha, system, record, env, flake=None, expression=None):
     phase('compare-retained-proof')
     proof = digest({'commit': sha, 'policy': digest(rules), 'system': system, 'closure': closure})
     if record['proofs'].get(system) != proof:
+        recorded = record['proofs'].get(system)
+        print('Retained proof mismatch: ' + json.dumps({
+            'commit': sha, 'system': system, 'rootCount': len(roots),
+            'closurePathCount': len(expected), 'rootsDigest': digest(roots),
+            'closureDigest': closure,
+            'expectedProof': recorded if isinstance(recorded, str) and re.fullmatch(r'[a-f0-9]{64}', recorded) else 'invalid',
+            'actualProof': proof,
+        }, sort_keys=True), flush=True)
         raise ValueError('Cached closure differs from the original build proof')
     print('Verified exact cached release outputs without source builds for ' + system)
     return {'commit': sha, 'system': system, 'policy': digest(rules), 'proof': proof, 'roots': roots}
