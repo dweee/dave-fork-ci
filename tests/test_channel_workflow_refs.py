@@ -87,7 +87,7 @@ class ChannelWorkflowRefs(unittest.TestCase):
             self.assertEqual(concurrency['group'], 'verified-release-channels')
             self.assertFalse(concurrency['cancel-in-progress'])
 
-    def test_cache_audits_use_general_linux_runner_and_builds_remain_native(self):
+    def test_cache_audits_run_where_they_can_read_and_builds_remain_native(self):
         platforms = {
             'github': {'x86_64-linux': 'ubuntu-24.04', 'aarch64-linux': 'ubuntu-24.04-arm',
                        'aarch64-darwin': 'macos-15'},
@@ -101,11 +101,15 @@ class ChannelWorkflowRefs(unittest.TestCase):
                 with self.subTest(forge=forge, system=system):
                     self.assertEqual(jobs['build_' + suffix]['runs-on'], native_runner)
                     retention = jobs['retain_' + suffix]
-                    self.assertEqual(retention['runs-on'], 'ubuntu-24.04' if forge == 'github' else 'nix')
+                    # Forgejo audits run on the general icicle runner, except aarch64
+                    # Linux, which evaluates and reads natively on the host-mode braco.
+                    expected = ('ubuntu-24.04' if forge == 'github'
+                                else 'braco' if system == 'aarch64-linux' else 'nix')
+                    self.assertEqual(retention['runs-on'], expected)
                     self.assertTrue(any('retain --system ' + system in step.get('run', '')
                                         for step in retention['steps']))
                     if forge == 'forgejo':
-                        self.assertIn('container', retention)
+                        self.assertEqual('container' in retention, expected == 'nix')
 
 
 if __name__ == '__main__':
