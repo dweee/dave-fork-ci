@@ -34,8 +34,9 @@ class ChannelWorkflowRefs(unittest.TestCase):
         with patch.dict('sys.modules', {'yaml': yaml}):
             installer.install(args)
         folder = root / ('.github/workflows' if forge == 'github' else '.forgejo/workflows')
+        names = ['release-channels', 'scheduled-updates', 'pr-checks']
         return {name: json.loads((folder / (name + '.yml')).read_text().split('\n', 1)[1])
-                for name in ['release-channels', 'scheduled-updates']}
+                for name in names if (folder / (name + '.yml')).exists()}
 
     def test_forgejo_cron_runs_monitor_inputs_build_and_retention_on_bare_default_ref(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -73,19 +74,17 @@ class ChannelWorkflowRefs(unittest.TestCase):
     def test_pr_regressions_do_not_share_or_replace_pending_trusted_releases(self):
         for forge in ['github', 'forgejo']:
             with tempfile.TemporaryDirectory() as directory:
-                workflow = self.generated(forge, directory)['release-channels']
-            concurrency = workflow['concurrency']
-            group = concurrency['group']
-            trusted = {matches(group, event, ref) for event in ['push', 'schedule', 'workflow_dispatch']
-                       for ref in ['main', 'refs/heads/main']}
-            # Preserve the old group so a release started before this update
-            # still excludes a newly dispatched trusted publisher.
-            self.assertEqual(trusted, {'verified-release-channels'})
-            first = matches(group, 'pull_request', 'refs/pull/1/merge')
-            second = matches(group, 'pull_request', 'refs/pull/2/merge')
-            self.assertNotEqual(first, second)
-            self.assertNotIn(first, trusted)
-            self.assertNotIn(second, trusted)
+                workflows = self.generated(forge, directory)
+            release = workflows['release-channels']
+            pr_checks = workflows['pr-checks']
+            # Release runs are trusted push/schedule/dispatch only. PRs run a
+            # separate test-only workflow, so Forgejo never sees a release run
+            # whose build/retain/promote jobs are all skipped.
+            self.assertNotIn('pull_request', release['on'])
+            self.assertIn('pull_request', pr_checks['on'])
+            self.assertEqual(set(pr_checks['jobs']), {'test'})
+            concurrency = release['concurrency']
+            self.assertEqual(concurrency['group'], 'verified-release-channels')
             self.assertFalse(concurrency['cancel-in-progress'])
 
     def test_cache_audits_use_general_linux_runner_and_builds_remain_native(self):
