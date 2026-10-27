@@ -102,9 +102,10 @@ def instantiation_expression(system):
     # packages whose platform metadata still does not match this system. The
     # goal is to realise IFD inputs, not to force every package to evaluate.
     return ('let f = builtins.getFlake ' + json.dumps('git+file://' + str(ROOT)) + '; '
+            'skip = [ "wiicompiled-vr-openxr" ]; '
             'drvs = output: builtins.mapAttrs (_: p: let r = builtins.tryEval (builtins.deepSeq p.drvPath p.drvPath); in if r.success then r.value else null) '
-            '((f.${output} or {}).' + system + ' or {}); '
-            'in { checks = drvs "checks"; }')
+            '(builtins.removeAttrs ((f.${output} or {}).' + system + ' or {}) skip); '
+            'in { packages = drvs "packages"; checks = drvs "checks"; }')
 
 
 def update():
