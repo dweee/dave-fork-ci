@@ -104,7 +104,7 @@ def instantiation_expression(system):
     return ('let f = builtins.getFlake ' + json.dumps('git+file://' + str(ROOT)) + '; '
             'drvs = output: builtins.mapAttrs (_: p: let r = builtins.tryEval (builtins.deepSeq p.drvPath p.drvPath); in if r.success then r.value else null) '
             '((f.${output} or {}).' + system + ' or {}); '
-            'in { packages = drvs "packages"; checks = drvs "checks"; }')
+            'in { checks = drvs "checks"; }')
 
 
 def update():
