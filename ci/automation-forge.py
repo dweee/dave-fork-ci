@@ -34,7 +34,12 @@ def failure_detail(error):
                 'missing-input-or-output' if error.code == 404 else
                 'rate-limit' if error.code == 429 else
                 'transport' if 500 <= error.code <= 599 else 'http-failure')
-        return kind + ' (HTTP ' + str(error.code) + ')'
+        detail = kind + ' (HTTP ' + str(error.code) + ')'
+        if error.code == 404 and ACTIVE_PHASE.startswith(('find-', 'read-', 'create-', 'update-')):
+            # Forgejo answers 404 to a restricted account with no collaborator row.
+            detail += (' - if the repository exists, the UPDATE_TOKEN account has no access to it; '
+                       'the owner can grant it with dave-fork-ci ci/ensure-updater-access.py')
+        return detail
     if isinstance(error, URLError):
         return 'transport'
     if isinstance(error, channel.CommandFailure):

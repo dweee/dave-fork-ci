@@ -253,6 +253,9 @@ def install(args):
           'on': {'schedule': [{'cron': updates_cron(args.repository)}], 'workflow_dispatch': {}},
           'permissions': {'contents': 'write', 'issues': 'write', 'pull-requests': 'write'},
           'concurrency': {'group': 'scheduled-input-updates', 'cancel-in-progress': False}, 'jobs': jobs})
+    if not github and not source_only:
+        print('Next: grant the restricted updater account write access to ' + args.repository +
+              ' (idempotent, needs an admin token): ci/ensure-updater-access.py --repository ' + args.repository)
     (ci / 'CHANNELS.md').write_text('''# Release and update automation
 
 `main` (or the configured source branch) accepts development changes. `tested`
@@ -310,6 +313,10 @@ Required repository configuration:
   `owner/name`: release channels at a minute in 02:00-06:59 UTC, input updates at a
   minute in each six-hour slot starting at hour 0-5 UTC. The offset is stable, so
   repositories no longer fire in the same minute.
+- On Forgejo, `UPDATE_TOKEN` belongs to the restricted `flakey-updater` account. A
+  restricted account has no implicit repository access (the API answers 404), so
+  the owner must grant it write access to this repository once, with an admin
+  token: `ci/ensure-updater-access.py --repository OWNER/NAME` in dave-fork-ci.
 - Forgejo may supply `GH_READ_TOKEN` for authenticated public metadata reads.
   Private input readers belong only on Forgejo; configure them before input jobs.
 
