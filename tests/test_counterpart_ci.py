@@ -42,7 +42,7 @@ class CounterpartCi(unittest.TestCase):
             disabled_root = self.install(disabled, githubCounterpartCi=False)
             self.assertEqual(self.snapshot(absent_root), self.snapshot(disabled_root))
             triggers = self.read(absent_root, 'release-channels.yml')['on']
-            self.assertEqual(list(triggers), ['push', 'pull_request', 'schedule', 'workflow_dispatch'])
+            self.assertEqual(list(triggers), ['push', 'schedule', 'workflow_dispatch'])
             self.assertEqual(triggers['push'], {'branches': ['main']})
             self.assertNotIn('githubCounterpartCi', (absent_root / 'ci/CHANNELS.md').read_text())
 
