@@ -61,7 +61,7 @@ class CounterpartCi(unittest.TestCase):
         triggers = workflow['on']
         self.assertEqual(list(triggers), ['push', 'schedule', 'workflow_dispatch'])
         self.assertEqual(triggers['push'], {'branches': ['main'], 'paths-ignore': IGNORED})
-        self.assertEqual(triggers['schedule'], [{'cron': '43 3 * * *'}])
+        self.assertEqual(triggers['schedule'], [{'cron': f"{installer.schedule_minute('fixture/tool')} 3 * * *"}])
         self.assertEqual(triggers['workflow_dispatch'], default['on']['workflow_dispatch'])
         self.assertEqual(triggers['workflow_dispatch']['inputs']['channel']['default'], 'tested')
         for key in ('name', 'permissions', 'concurrency', 'jobs'):
