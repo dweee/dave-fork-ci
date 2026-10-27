@@ -157,15 +157,18 @@ def install(args):
              'run': python('ci/release-channel.py promote --channel "$CHANNEL" --revision "$REVISION" --proofs "$RELEASE_PROOFS"')}]
         jobs['promote'] = promoter
         write('release-channels.yml', {'name': 'Verified release channels', 'on': {
-            'push': {'branches': [args.branch]}, 'pull_request': {},
+            'push': {'branches': [args.branch]},
             'schedule': [{'cron': '43 3 * * *'}],
             'workflow_dispatch': {'inputs': {'channel': {'type': 'choice', 'options': ['tested', 'stable'], 'default': 'tested'},
                                              'revision': {'type': 'string', 'description': 'Exact tested commit for stable; empty uses the event commit', 'required': False}}}},
             'permissions': {'contents': 'read'}, 'concurrency': {
-                # Keep the existing trusted lock during rollout. PR-only
-                # regressions neither publish nor wait behind native releases.
-                'group': expr("github.event_name == 'pull_request' && format('verified-release-pr-{0}', github.ref) || 'verified-release-channels'"),
+                'group': 'verified-release-channels',
                 'cancel-in-progress': False}, 'jobs': jobs})
+        # PRs run the regression/policy test in a separate workflow. Forgejo
+        # records a workflow with skipped release jobs as failed even when the
+        # test job passed, so release-channels.yml must not trigger on PRs.
+        write('pr-checks.yml', {'name': 'PR automation checks', 'on': {'pull_request': {}},
+            'permissions': {'contents': 'read'}, 'jobs': {'test': test}})
     monitor = job()
     monitor['if'] = expr(trusted_ref)
     monitor['timeout-minutes'] = 120
@@ -233,7 +236,7 @@ Required repository configuration:
 - Optional `UPDATE_TOKEN` is a repository-scoped app/PAT. On GitHub, use it when
   generated PRs must trigger further workflows; default GITHUB_TOKEN PRs do not.
 - Optional `CHANNEL_TOKEN` can identify a separate protected-branch publisher.
-- Forgejo requires the existing native `nix` and `braco` Linux runners. Flakey
+- Forgejo requires the existing native `nix` and native aarch64 Linux runners. Flakey
   and private inputs never go to GitHub. Already-public GitHub owning repos may
   use their existing native hosted Darwin builders independently.
 - Forgejo may supply `GH_READ_TOKEN` for authenticated public metadata reads.
