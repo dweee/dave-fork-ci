@@ -28,6 +28,14 @@ source branch that only touch the paths listed under `paths-ignore` in
 commit until the next qualifying push, the nightly run or an owner dispatch
 publishes the current head. Confirm that no ignored path feeds a package.
 '''
+# The Attic host (icicle) is reachable at the runner-network address only from
+# jobs on the icicle-hosted `nix` runner. Every other runner keeps the public URL.
+INTERNAL_ATTIC = 'http://172.29.0.1:8080'
+# braco can reach the same listener over the tailnet, but its runner unit denies
+# the tailnet range. Once that allows icicle, adding 'braco': TAILNET_ATTIC below
+# is the whole installer change; the helpers already accept this origin.
+TAILNET_ATTIC = 'http://icicle.eel-ling.ts.net:8080'
+CACHE_SERVERS = {'nix': INTERNAL_ATTIC}
 HELPERS = ['release-channel.py', 'test-release-channel.py', 'update-inputs.py',
            'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-attic-read.py']
 
@@ -46,9 +54,25 @@ def trusted_branch_ref(forge, branch):
     return "(" + full + " || (github.event_name == 'schedule' && github.ref == '" + branch + "'))"
 
 
-def schedule_minute(repository):
-    """Spread repository schedules so every repo does not hit the runner at once."""
-    return sum(ord(char) for char in repository) % 60
+def schedule_slots(repository):
+    """Stable per-repository schedule offsets (never Python's randomised hash()).
+
+    Every repository keeps the same cadence, but its slot is derived from a
+    SHA-256 of `owner/name`, so runs do not all queue in the same minute.
+    Returns (release hour 2-6 UTC, release minute, updates hour offset 0-5, updates minute).
+    """
+    digest = hashlib.sha256(repository.encode()).digest()
+    return 2 + digest[0] % 5, digest[1] % 60, digest[2] % 6, digest[3] % 60
+
+
+def release_cron(repository):
+    hour, minute, _, _ = schedule_slots(repository)
+    return f'{minute} {hour} * * *'
+
+
+def updates_cron(repository):
+    _, _, offset, minute = schedule_slots(repository)
+    return f'{minute} ' + ','.join(str(offset + 6 * slot) for slot in range(4)) + ' * * *'
 
 
 def install(args):
@@ -59,7 +83,6 @@ def install(args):
     github = forge == 'github'
     trusted_ref = trusted_branch_ref(forge, args.branch)
     config = json.loads(args.policy.read_text())
-    minute = schedule_minute(args.repository)
     counterpart = config.get('githubCounterpartCi', False)
     if not isinstance(counterpart, bool) or (counterpart and github):
         raise SystemExit('githubCounterpartCi must be a boolean and applies only to Forgejo repositories')
@@ -102,13 +125,16 @@ def install(args):
         return [{'uses': INSTALL, 'with': {'nix_version': '2.34.7', 'enable_kvm': False,
                      'nix_conf': 'experimental-features = nix-command flakes\naccept-flake-config = false\n'
                                  'max-jobs = 1\ncores = '+str(cores)+'\n'}}]
-    def job(runner=None):
+    def job(runner=None, cache=False):
         default_runner = 'ubuntu-24.04' if github else 'nix'
         result = {'runs-on': runner or default_runner, 'timeout-minutes': 360}
         if not github:
             result['env'] = {'NIX_CONFIG': 'experimental-features = nix-command flakes\naccept-flake-config = false\nsandbox = false\nfilter-syscalls = false\n'}
         if not github and result['runs-on'] in {'nix', 'nix-light'}:
             result['container'] = {'image': 'nixos/nix@sha256:7a007c766426c1877758ddc5cb87a965ac131fc78c582ce0083d922d51ae945c'}
+        if not github and cache and result['runs-on'] in CACHE_SERVERS:
+            # Cache reads skip the public reverse proxy, like flakey's nix-cache workflow.
+            result['env']['ATTIC_SERVER'] = CACHE_SERVERS[result['runs-on']]
         return result
     def python(command):
         return ('python3 ' if github else 'nix shell --option accept-flake-config false --no-write-lock-file --inputs-from . nixpkgs#python3 -c python3 ') + command
@@ -140,7 +166,7 @@ def install(args):
             native = job(({'x86_64-linux': 'ubuntu-24.04', 'aarch64-linux': 'ubuntu-24.04-arm',
                            'aarch64-darwin': 'macos-15', 'x86_64-darwin': 'macos-15-intel'} if github else
                           {'x86_64-linux': 'nix', 'aarch64-linux': 'braco',
-                           'aarch64-darwin': 'darwin-aarch64', 'x86_64-darwin': 'darwin-x86_64'})[system])
+                           'aarch64-darwin': 'darwin-aarch64', 'x86_64-darwin': 'darwin-x86_64'})[system], cache=True)
             native.update(needs=['test'], outputs={'proof': expr('steps.release.outputs.proof')},
                           **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
             # Keep derivations serial to bound memory, while allowing the
@@ -157,8 +183,9 @@ def install(args):
                  'run': python('ci/configure-attic-read.py --cleanup')}]
             jobs[key] = native
             # Retention disables builders and only evaluates paths/reads NARs.
-            # Keep scarce native runners available for actual platform builds.
-            retention = job()
+            # aarch64 Linux retention runs on the native braco runner (one job
+            # at a time there); every other system stays on the icicle nix runner.
+            retention = job('braco' if system == 'aarch64-linux' and not github else None, cache=True)
             retention['if'] = expr("(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && " + trusted_ref)
             retention['steps'] = checkout()+bootstrap()+[
                 {'name': 'Configure job-local private reader',
@@ -184,7 +211,7 @@ def install(args):
         jobs['promote'] = promoter
         triggers = {
             'push': {'branches': [args.branch]},
-            'schedule': [{'cron': f'{minute} 3 * * *'}],
+            'schedule': [{'cron': release_cron(args.repository)}],
             'workflow_dispatch': {'inputs': {'channel': {'type': 'choice', 'options': ['tested', 'stable'], 'default': 'tested'},
                                              'revision': {'type': 'string', 'description': 'Exact tested commit for stable; empty uses the event commit', 'required': False}}}}
         if counterpart:
@@ -223,7 +250,7 @@ def install(args):
              'run': python('ci/automation-forge.py inputs')}]
         jobs['inputs'] = updater
     write('scheduled-updates.yml', {'name': 'Input and manual version monitoring',
-          'on': {'schedule': [{'cron': f'{minute} */6 * * *'}], 'workflow_dispatch': {}},
+          'on': {'schedule': [{'cron': updates_cron(args.repository)}], 'workflow_dispatch': {}},
           'permissions': {'contents': 'write', 'issues': 'write', 'pull-requests': 'write'},
           'concurrency': {'group': 'scheduled-input-updates', 'cancel-in-progress': False}, 'jobs': jobs})
     (ci / 'CHANNELS.md').write_text('''# Release and update automation
@@ -270,6 +297,19 @@ Required repository configuration:
 - Forgejo requires the existing native `nix` and native aarch64 Linux runners. Flakey
   and private inputs never go to GitHub. Already-public GitHub owning repos may
   use their existing native hosted Darwin builders independently.
+- Forgejo jobs on the `nix` runner (x86_64 Linux build and the x86_64 Linux and
+  Darwin retention jobs) set `ATTIC_SERVER` to the Attic host's runner-network
+  address, so cache reads skip the public reverse proxy. The helpers accept only
+  that address, the tailnet address of the same listener, or the public URL, send
+  the token to one host only, and keep proofs independent of the transport. The
+  braco aarch64 build and retention jobs, Darwin builds and all uploads use the
+  public HTTPS URL. The aarch64 Linux retention job runs on braco, which executes
+  one job at a time: it queues behind other repositories' aarch64 jobs.
+- Schedules keep their cadence (release channels nightly, input updates every six
+  hours) but start at a per-repository offset derived from a SHA-256 of
+  `owner/name`: release channels at a minute in 02:00-06:59 UTC, input updates at a
+  minute in each six-hour slot starting at hour 0-5 UTC. The offset is stable, so
+  repositories no longer fire in the same minute.
 - Forgejo may supply `GH_READ_TOKEN` for authenticated public metadata reads.
   Private input readers belong only on Forgejo; configure them before input jobs.
 
