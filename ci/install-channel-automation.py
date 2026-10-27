@@ -46,6 +46,11 @@ def trusted_branch_ref(forge, branch):
     return "(" + full + " || (github.event_name == 'schedule' && github.ref == '" + branch + "'))"
 
 
+def schedule_minute(repository):
+    """Spread repository schedules so every repo does not hit the runner at once."""
+    return sum(ord(char) for char in repository) % 60
+
+
 def install(args):
     import yaml
     yaml.SafeDumper.add_representer(str, multiline)
@@ -54,6 +59,7 @@ def install(args):
     github = forge == 'github'
     trusted_ref = trusted_branch_ref(forge, args.branch)
     config = json.loads(args.policy.read_text())
+    minute = schedule_minute(args.repository)
     counterpart = config.get('githubCounterpartCi', False)
     if not isinstance(counterpart, bool) or (counterpart and github):
         raise SystemExit('githubCounterpartCi must be a boolean and applies only to Forgejo repositories')
@@ -177,7 +183,7 @@ def install(args):
         jobs['promote'] = promoter
         triggers = {
             'push': {'branches': [args.branch]},
-            'schedule': [{'cron': '43 3 * * *'}],
+            'schedule': [{'cron': f'{minute} 3 * * *'}],
             'workflow_dispatch': {'inputs': {'channel': {'type': 'choice', 'options': ['tested', 'stable'], 'default': 'tested'},
                                              'revision': {'type': 'string', 'description': 'Exact tested commit for stable; empty uses the event commit', 'required': False}}}}
         if counterpart:
@@ -216,7 +222,7 @@ def install(args):
              'run': python('ci/automation-forge.py inputs')}]
         jobs['inputs'] = updater
     write('scheduled-updates.yml', {'name': 'Input and manual version monitoring',
-          'on': {'schedule': [{'cron': '17 */6 * * *'}], 'workflow_dispatch': {}},
+          'on': {'schedule': [{'cron': f'{minute} */6 * * *'}], 'workflow_dispatch': {}},
           'permissions': {'contents': 'write', 'issues': 'write', 'pull-requests': 'write'},
           'concurrency': {'group': 'scheduled-input-updates', 'cancel-in-progress': False}, 'jobs': jobs})
     (ci / 'CHANNELS.md').write_text('''# Release and update automation
