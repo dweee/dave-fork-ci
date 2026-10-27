@@ -17,7 +17,33 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-CACHE = 'https://attic.monke.fail/flakey'
+PUBLIC_ATTIC = 'https://attic.monke.fail'
+# The Attic host's address on the Forgejo runner network, reachable only from
+# jobs on the icicle-hosted `nix` runner. It serves the same cache and keys.
+INTERNAL_ATTIC = 'http://172.29.0.1:8080'
+# The same listener over the tailnet, for the host-mode braco runner.
+TAILNET_ATTIC = 'http://icicle.eel-ling.ts.net:8080'
+REVIEWED_ATTIC = {PUBLIC_ATTIC, INTERNAL_ATTIC, TAILNET_ATTIC}
+PUBLIC_CACHE = PUBLIC_ATTIC + '/flakey'
+
+
+def attic_server(environ=None):
+    """Origin used to read the cache; the public one unless the job opts in.
+
+    Only the three reviewed origins are accepted, so a credential can reach plain
+    HTTP only at the private runner-network or tailnet address of the Attic host. Proofs and records never
+    store the transport; PUBLIC_CACHE is the one canonical cache identity.
+    """
+    value = (os.environ if environ is None else environ).get('ATTIC_SERVER', '').strip().rstrip('/')
+    if value and value not in REVIEWED_ATTIC:
+        raise ValueError('ATTIC_SERVER is not a reviewed Attic origin')
+    return value or PUBLIC_ATTIC
+
+
+try:
+    CACHE = attic_server() + '/flakey'
+except ValueError as error:
+    sys.exit('Release channel gate failed during startup: ' + str(error) + '.')
 KEY = 'flakey:mDx4DiNpH5w1Pl8OAKFFWq1ZsypA9lbaFKNiRWhqYE8='
 UPSTREAM = 'https://cache.nixos.org'
 UPSTREAM_KEY = 'cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY='
