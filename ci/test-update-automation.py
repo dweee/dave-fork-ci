@@ -216,6 +216,35 @@ class ImportFromDerivation(unittest.TestCase):
             self.assertEqual(json.loads(value), {'packages': {}, 'checks': {}})
 
 
+class CatalogAlignment(unittest.TestCase):
+    def test_alignment_reads_the_catalog_lock_from_metadata_not_the_store_path(self):
+        pin = {'type': 'github', 'owner': 'o', 'repo': 'r', 'rev': 'a'*40}
+        catalog = {'path': '/nonexistent/lazy-tree', 'locks': {'root': 'root', 'nodes': {
+            'root': {'inputs': {'nixpkgs': 'nixpkgs_2'}}, 'nixpkgs_2': {'locked': pin}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'ci').mkdir()
+            (root/'ci/tracking-inputs.json').write_text(json.dumps({'version': 1, 'inputs': {
+                'catalog': {'source': 'github:o/catalog/tested'}, 'nixpkgs': {'source': 'github:o/nixpkgs'}},
+                'alignWith': {'input': 'catalog', 'inputs': ['nixpkgs']}}))
+            (root/'flake.lock').write_text(json.dumps({'root': 'root', 'version': 7, 'nodes': {
+                'root': {'inputs': {'catalog': 'catalog', 'nixpkgs': 'nixpkgs'}},
+                'catalog': {'original': {'type': 'github'}}, 'nixpkgs': {'original': {'type': 'github'}}}}))
+            calls = []
+            def fake_run(*args):
+                calls.append(args)
+                if args[:3] == ('nix', 'flake', 'metadata'):
+                    return json.dumps(catalog)
+                if args[:3] == ('nix', 'flake', 'lock'):
+                    raise u.channel.CommandFailure('stop after alignment')
+                return ''
+            with patch.object(u, 'ROOT', root), patch.object(u, 'run', fake_run):
+                with self.assertRaisesRegex(u.channel.CommandFailure, 'stop after alignment'):
+                    u.update()
+            lock = next(c for c in calls if c[:3] == ('nix', 'flake', 'lock'))
+            self.assertEqual(lock[lock.index('nixpkgs') + 1], 'github:o/r/' + 'a'*40)
+
+
 @unittest.skipUnless(shutil.which('nix'), 'Nix required for lock updater fixture')
 class RealInputMovement(unittest.TestCase):
     def test_branch_movement_is_written_by_nix_as_an_exact_pin(self):
