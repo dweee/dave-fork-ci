@@ -133,7 +133,9 @@ def update():
         catalog = json.loads(run('nix', 'flake', 'metadata', '--json', '--refresh',
                                  '--option', 'accept-flake-config', 'false',
                                  '--no-write-lock-file', overrides[alignment['input']]))
-        catalog_lock = json.loads((Path(catalog['path']) / 'flake.lock').read_text())
+        # Newer Nix may not materialise `path` in the store (lazy trees); the
+        # metadata always carries the catalog's own lock graph.
+        catalog_lock = catalog['locks']
         for name in alignment['inputs']:
             overrides[name] = pin_url(root_node(catalog_lock, name)['locked'])
             if not overrides[name]:
