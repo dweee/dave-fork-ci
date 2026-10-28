@@ -1,0 +1,11 @@
+{
+  "targets": {},
+  "excludedSystems": [],
+  "submodules": false,
+  "integrationInventory": false,
+  "version": 1,
+  "forge": "github",
+  "repository": "dweee/dave-fork-ci",
+  "branch": "main",
+  "remote": "https://github.com/dweee/dave-fork-ci.git"
+}
