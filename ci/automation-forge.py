@@ -61,7 +61,8 @@ def api(rules, method, endpoint, data=None):
                       headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
                                'Accept': 'application/json', 'User-Agent': 'release-automation'})
     with build_opener(NoRedirect()).open(request, timeout=60) as response:
-        return json.load(response)
+        payload = response.read()
+        return json.loads(payload) if payload else None
 
 
 def attribution(rules):
@@ -106,6 +107,44 @@ def branch_exists(rules, prefix, branch):
     return True
 
 
+INPUT_MARKER = '<!-- tracked-input-update -->'
+INPUT_FILES = {'flake.nix', 'flake.lock', 'nix/forks.json'}
+
+
+def input_pr(rules, pr):
+    return (INPUT_MARKER in (pr.get('body') or '')
+            and pr.get('base', {}).get('ref') == rules['branch']
+            and pr.get('head', {}).get('ref', '').startswith('automation/input-updates-')
+            and pr.get('head', {}).get('repo', {}).get('full_name', '').lower() == rules['repository'].lower())
+
+
+def dispatch_input_checks(rules, prefix, pr):
+    if rules['forge'] != 'github':
+        return
+    branch, sha = pr['head']['ref'], pr['head']['sha']
+    for workflow in rules.get('inputCheckWorkflows', []):
+        if not re.fullmatch(r'[A-Za-z0-9_-]+[.]ya?ml', workflow):
+            raise ValueError('Invalid input check workflow')
+        endpoint = prefix + '/actions/workflows/' + workflow
+        runs = api(rules, 'GET', endpoint + '/runs?head_sha=' + sha + '&per_page=1')
+        if not runs.get('workflow_runs'):
+            phase('dispatch-input-checks')
+            api(rules, 'POST', endpoint + '/dispatches', {'ref': branch})
+
+
+def consolidate_input_prs(rules, prefix, prs, current):
+    for pr in prs:
+        if pr['number'] == current['number'] or not input_pr(rules, pr):
+            continue
+        files = api(rules, 'GET', prefix + '/pulls/' + str(pr['number']) + '/files?limit=100&per_page=100')
+        # Preserve candidates with manual source fixes or an incomplete file list.
+        if not files or len(files) >= 100 or any(f['filename'] not in INPUT_FILES for f in files):
+            print('Preserving update PR with additional changes: ' + str(pr['number']))
+            continue
+        phase('close-superseded-input-pr')
+        api(rules, 'PATCH', prefix + '/pulls/' + str(pr['number']), {'state': 'closed'})
+
+
 def inputs(rules):
     phase('inspect-input-diff')
     changed = channel.run('git', 'diff', '--name-only', '--', 'flake.nix', 'flake.lock', 'nix/forks.json')
@@ -120,7 +159,10 @@ def inputs(rules):
     prefix = '/repos/' + rules['repository']
     phase('find-existing-input-pr')
     prs = api(rules, 'GET', prefix + '/pulls?state=open&limit=100&per_page=100')
-    if any(p.get('head', {}).get('ref') == branch for p in prs):
+    current = next((p for p in prs if p.get('head', {}).get('ref') == branch and input_pr(rules, p)), None)
+    if current:
+        dispatch_input_checks(rules, prefix, current)
+        consolidate_input_prs(rules, prefix, prs, current)
         print('An update PR already exists for this input set')
         return
     if branch_exists(rules, prefix, branch):
@@ -141,6 +183,8 @@ def inputs(rules):
     phase('create-input-pr')
     pr = api(rules, 'POST', prefix + '/pulls', {'title': 'Update tracked flake inputs',
                                               'head': branch, 'base': rules['branch'], 'body': body})
+    dispatch_input_checks(rules, prefix, pr)
+    consolidate_input_prs(rules, prefix, prs, pr)
     print(pr.get('html_url', 'Created input update PR'))
 
 

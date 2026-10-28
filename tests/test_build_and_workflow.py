@@ -112,7 +112,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
             root = Path(directory)
             (root / '.fork-ci.json').write_text(json.dumps(POLICY))
             with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(root / 'out')]), \
-                 patch.dict(os.environ, {'ATTIC_TOKEN': 'synthetic-regression-fixture'}, clear=True):
+                 patch.dict(os.environ, {'ATTIC_TOKEN': 'synthetic-regression-fixture', 'PATH': os.environ['PATH']}, clear=True):
                 with self.assertRaises(fork_ci.Blocked):
                     build.main()
 
