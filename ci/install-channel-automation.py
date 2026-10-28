@@ -7,6 +7,7 @@ The input policy is explicit; this tool never guesses publication ownership.
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 
@@ -86,6 +87,9 @@ def install(args):
     counterpart = config.get('githubCounterpartCi', False)
     if not isinstance(counterpart, bool) or (counterpart and github):
         raise SystemExit('githubCounterpartCi must be a boolean and applies only to Forgejo repositories')
+    workflows = config.get('inputCheckWorkflows', [])
+    if not isinstance(workflows, list) or any(not isinstance(w, str) or not re.fullmatch(r'[A-Za-z0-9_-]+[.]ya?ml', w) for w in workflows):
+        raise SystemExit('inputCheckWorkflows must contain workflow filenames')
     config.update(version=1, forge=forge, repository=args.repository, branch=args.branch,
                   remote=('https://github.com/' if github else 'https://git.monke.fail/')+args.repository+'.git')
     ci = root / 'ci'
@@ -251,7 +255,7 @@ def install(args):
         jobs['inputs'] = updater
     write('scheduled-updates.yml', {'name': 'Input and manual version monitoring',
           'on': {'schedule': [{'cron': updates_cron(args.repository)}], 'workflow_dispatch': {}},
-          'permissions': {'contents': 'write', 'issues': 'write', 'pull-requests': 'write'},
+          'permissions': {'contents': 'write', 'issues': 'write', 'pull-requests': 'write', **({'actions': 'write'} if github else {})},
           'concurrency': {'group': 'scheduled-input-updates', 'cancel-in-progress': False}, 'jobs': jobs})
     if not github and not source_only:
         print('Next: grant the restricted updater account write access to ' + args.repository +
@@ -294,8 +298,15 @@ Required repository configuration:
   unrelated automation writes; allow only the release workflow identity.
 - Supply a repository-scoped `ATTIC_TOKEN` (or `FLAKEY_ATTIC_TOKEN`) with pull/push
   access to the existing `flakey` cache. No private Forgejo inputs go to GitHub.
-- Optional `UPDATE_TOKEN` is a repository-scoped app/PAT. On GitHub, use it when
-  generated PRs must trigger further workflows; default GITHUB_TOKEN PRs do not.
+- `inputCheckWorkflows` lists reviewed GitHub native workflows with workflow_dispatch.
+  The updater explicitly dispatches them on the immutable update branch, including
+  when using GITHUB_TOKEN. Each workflow must keep cache publication and secrets
+  restricted to the trusted source branch. The updater requires Actions write.
+- Optional `UPDATE_TOKEN` is a repository-scoped app/PAT; default GITHUB_TOKEN
+  PRs do not emit further pull_request workflow events.
+- A new update candidate supersedes older marked input-only PRs for the same
+  target branch after check dispatch succeeds. Branches are immutable and never
+  force-pushed; candidates containing source fixes are preserved for review.
 - Optional `CHANNEL_TOKEN` can identify a separate protected-branch publisher.
 - Forgejo requires the existing native `nix` and native aarch64 Linux runners. Flakey
   and private inputs never go to GitHub. Already-public GitHub owning repos may
