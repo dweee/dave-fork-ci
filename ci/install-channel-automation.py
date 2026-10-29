@@ -86,6 +86,12 @@ def install(args):
     github = forge == 'github'
     trusted_ref = trusted_branch_ref(forge, args.branch)
     config = json.loads(args.policy.read_text())
+    image = config.get('forgejoDeterminateImage')
+    labels = config.get('forgejoDeterminateLabels', [])
+    if image is not None and (github or not isinstance(image, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image)):
+        raise SystemExit('forgejoDeterminateImage must be a pinned local image ID on Forgejo')
+    if not isinstance(labels, list) or any(label not in ('nix', 'nix-light') for label in labels) or (labels and image is None):
+        raise SystemExit('forgejoDeterminateLabels must list nix or nix-light and require an image')
     counterpart = config.get('githubCounterpartCi', False)
     if not isinstance(counterpart, bool) or (counterpart and github):
         raise SystemExit('githubCounterpartCi must be a boolean and applies only to Forgejo repositories')
@@ -125,9 +131,18 @@ def install(args):
                         'git init -q .\ngit remote add origin "$SERVER/$REPO.git"\n'
                         'git -c http.extraHeader="Authorization: Basic $auth" fetch -q origin "$SHA"\n'
                         'git checkout -q --detach FETCH_HEAD\n'}]
-    def bootstrap(cores=1):
+    def bootstrap(cores=1, runner=None):
         if not github:
-            return []
+            if not image or runner not in labels:
+                return []
+            return [{'name': 'Start isolated Determinate daemon', 'run':
+                     "set -eu\nnix --version | grep -F 'Determinate Nix 3.24.1'\n"
+                     "env -u NIX_REMOTE nix-daemon > /tmp/nix-daemon.log 2>&1 &\n"
+                     "daemon=$!\nfor n in $(seq 1 30); do [ -S /nix/var/nix/daemon-socket/socket ] && break; kill -0 $daemon; sleep 1; done\n"
+                     "test -S /nix/var/nix/daemon-socket/socket\n"
+                     "test \"$(readlink -f /proc/$daemon/exe)\" = \"$(readlink -f \"$(command -v nix)\")\"\n"
+                     "nix store info --store daemon --json\nprintf 'NIX_REMOTE=daemon\\n' >> \"$GITHUB_ENV\""}]
+
         intel = "runner.os == 'macOS' && runner.arch == 'X64'"
         common = 'accept-flake-config = false\nmax-jobs = 1\ncores = '+str(cores)+'\n'
         return [
@@ -149,6 +164,10 @@ def install(args):
             result['env'] = {'NIX_CONFIG': 'experimental-features = nix-command flakes\naccept-flake-config = false\nsandbox = false\nfilter-syscalls = false\n'}
         if not github and result['runs-on'] in {'nix', 'nix-light'}:
             result['container'] = {'image': 'nixos/nix@sha256:7a007c766426c1877758ddc5cb87a965ac131fc78c582ce0083d922d51ae945c'}
+            if image and result['runs-on'] in labels:
+                result['container'] = {'image': image}
+                result['env']['NIX_REMOTE'] = 'daemon'
+                result['env']['NIX_CONFIG'] += 'extra-experimental-features = parallel-eval\neval-cores = 2\n'
         if not github and cache and result['runs-on'] in CACHE_SERVERS:
             # Cache reads skip the public reverse proxy, like flakey's nix-cache workflow.
             result['env']['ATTIC_SERVER'] = CACHE_SERVERS[result['runs-on']]
@@ -162,14 +181,14 @@ def install(args):
             previous.unlink()
         if config.get('excludedSystems'):
             checks = job(None if github else 'nix-light')
-            checks['steps'] = checkout()+bootstrap()+[{'name': 'Automation regression tests',
+            checks['steps'] = checkout()+bootstrap(runner=checks['runs-on'])+[{'name': 'Automation regression tests',
                 'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')}]
             write('automation-checks.yml', {'name': 'Automation checks', 'on': {'push': {'branches':[args.branch]},
                 'pull_request':{}, 'workflow_dispatch':{}}, 'permissions':{'contents':'read'}, 'jobs':{'test':checks}})
     if config.get('targets'):
         test = job(None if github else 'nix-light')
         test['outputs'] = {'revision': expr('steps.selection.outputs.revision')}
-        test['steps'] = checkout()+bootstrap()+[
+        test['steps'] = checkout()+bootstrap(runner=test['runs-on'])+[
             {'name': 'Regression tests and complete inventory policy', 'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')},
             {'name': 'Select immutable revision', 'id': 'selection',
              'env': {'REVISION': expr('inputs.revision || github.sha')},
@@ -189,7 +208,7 @@ def install(args):
             # Keep derivations serial to bound memory, while allowing the
             # x86 Linux builder to use every CPU assigned to its runner.
             native['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(
-                cores=0 if system == 'x86_64-linux' else 1)+[
+                cores=0 if system == 'x86_64-linux' else 1, runner=native['runs-on'])+[
                 {'name': 'Configure job-local private cache reader',
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
                  'run': python('ci/configure-attic-read.py')},
@@ -204,7 +223,7 @@ def install(args):
             # at a time there); every other system stays on the icicle nix runner.
             retention = job('braco' if system == 'aarch64-linux' and not github else None, cache=True)
             retention['if'] = expr("(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && " + trusted_ref)
-            retention['steps'] = checkout()+bootstrap()+[
+            retention['steps'] = checkout()+bootstrap(runner=retention['runs-on'])+[
                 {'name': 'Configure job-local private reader',
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
                  'run': python('ci/configure-attic-read.py')},
@@ -219,7 +238,7 @@ def install(args):
         promoter = job()
         promoter.update(needs=needed, permissions={'contents': 'write'},
                         **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
-        promoter['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap()+[
+        promoter['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(runner=promoter['runs-on'])+[
             {'name': 'Atomically publish immutable release tag and channel',
              'env': {'CHANNEL_TOKEN': expr('secrets.CHANNEL_TOKEN || github.token'),
                      'RELEASE_PROOFS': json.dumps(proofs), 'REVISION': expr('needs.test.outputs.revision'),
@@ -249,7 +268,7 @@ def install(args):
     monitor = job(None if github else 'nix-light')
     monitor['if'] = expr(trusted_ref)
     monitor['timeout-minutes'] = 120
-    monitor['steps'] = checkout()+bootstrap()+[
+    monitor['steps'] = checkout()+bootstrap(runner=monitor['runs-on'])+[
         {'name': 'Monitor manual package/file pins', 'id': 'monitor', 'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GH_READ_TOKEN'),
                     'MONITOR_TOKEN': expr('github.token') if not github else ''},
          'run': python('ci/update-monitor.py')},
@@ -261,7 +280,7 @@ def install(args):
         updater = job(None if github else 'nix-light')
         updater['if'] = expr(trusted_ref)
         updater['timeout-minutes'] = 120
-        updater['steps'] = checkout()+bootstrap()+[
+        updater['steps'] = checkout()+bootstrap(runner=updater['runs-on'])+[
             {'name': 'Resolve every tracked input and validate the exact candidate',
              'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GH_READ_TOKEN')},
              'run': python('ci/update-inputs.py')},

@@ -21,11 +21,11 @@ def matches(expression, event, ref):
 
 
 class ChannelWorkflowRefs(unittest.TestCase):
-    def generated(self, forge, directory, systems=('x86_64-linux',)):
+    def generated(self, forge, directory, systems=('x86_64-linux',), extra=None):
         root = Path(directory)
         (root / 'flake.nix').touch()
         policy = root / 'policy.json'
-        policy.write_text(json.dumps({'targets': {system: [] for system in systems}}))
+        policy.write_text(json.dumps({'targets': {system: [] for system in systems}, **(extra or {})}))
         args = SimpleNamespace(directory=root, forge=forge, repository='fixture/tool', branch='main', policy=policy)
         # JSON is a YAML subset. Capture generated job definitions using only
         # stdlib; production serialization remains PyYAML's safe_dump.
@@ -37,6 +37,26 @@ class ChannelWorkflowRefs(unittest.TestCase):
         names = ['release-channels', 'scheduled-updates', 'pr-checks']
         return {name: json.loads((folder / (name + '.yml')).read_text().split('\n', 1)[1])
                 for name in names if (folder / (name + '.yml')).exists()}
+
+    def test_forgejo_opt_in_only_changes_selected_container_labels(self):
+        image = 'sha256:' + 'a' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.generated('forgejo', directory, ('x86_64-linux', 'aarch64-linux'),
+                                       {'forgejoDeterminateImage': image, 'forgejoDeterminateLabels': ['nix']})
+        changed = 0
+        for workflow in workflows.values():
+            for job in workflow['jobs'].values():
+                steps = [step for step in job['steps'] if step.get('name') == 'Start isolated Determinate daemon']
+                if job['runs-on'] == 'nix':
+                    changed += 1
+                    self.assertEqual(job['container']['image'], image)
+                    self.assertEqual(job['env']['NIX_REMOTE'], 'daemon')
+                    self.assertIn('eval-cores = 2', job['env']['NIX_CONFIG'])
+                    self.assertEqual(len(steps), 1)
+                    self.assertIn('env -u NIX_REMOTE nix-daemon', steps[0]['run'])
+                else:
+                    self.assertFalse(steps)
+        self.assertGreater(changed, 0)
 
     def test_github_bootstraps_determinate_with_intel_macos_fallback(self):
         with tempfile.TemporaryDirectory() as directory:

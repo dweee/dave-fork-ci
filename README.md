@@ -81,3 +81,14 @@ Tests include real local HTTP Git repositories for prepare → immutable candida
 Reference: [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows), [event behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), [workflow security](https://docs.github.com/en/actions/reference/security/secure-use).
 
 Every successful candidate build retains a Nix closure archive for one day, independently of Attic publication.
+
+### Optional Determinate Nix on Forgejo runners
+
+`ci/install-channel-automation.py` accepts two Forgejo-only policy fields:
+`forgejoDeterminateImage`, a local `sha256:` image ID, and
+`forgejoDeterminateLabels`, a list containing `nix` and/or `nix-light`. The
+selected labels must be backed by a runner where that exact image is installed.
+Generated jobs use their own ephemeral container store, start the matching
+daemon and enable two parallel evaluation workers. Other labels retain their
+existing setup. This option does not distribute images or migrate persistent
+stores; arrange and verify those separately before enabling it.
