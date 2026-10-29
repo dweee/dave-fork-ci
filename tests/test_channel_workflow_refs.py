@@ -58,6 +58,15 @@ class ChannelWorkflowRefs(unittest.TestCase):
                 self.assertIn("runner.os == 'macOS'", fallback[0]['if'])
                 self.assertTrue(any(s.get('name') == 'Check Determinate Nix and daemon' for s in steps))
 
+    def test_pr_selection_does_not_reference_dispatch_inputs(self):
+        for forge in ('github', 'forgejo'):
+            with tempfile.TemporaryDirectory() as directory:
+                workflows = self.generated(forge, directory)
+            pr = workflows['pr-checks']['jobs']['test']['steps'][-1]['env']
+            release = workflows['release-channels']['jobs']['test']['steps'][-1]['env']
+            self.assertEqual(pr, {'REVISION': '${{ github.sha }}'})
+            self.assertEqual(release, {'REVISION': '${{ inputs.revision || github.sha }}'})
+
     def test_forgejo_cron_runs_monitor_inputs_build_and_retention_on_bare_default_ref(self):
         with tempfile.TemporaryDirectory() as directory:
             workflows = self.generated('forgejo', directory)

@@ -5,6 +5,7 @@ Run locally with --directory, --forge, --repository, --branch and --policy.
 The input policy is explicit; this tool never guesses publication ownership.
 """
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -171,7 +172,7 @@ def install(args):
         test['steps'] = checkout()+bootstrap()+[
             {'name': 'Regression tests and complete inventory policy', 'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')},
             {'name': 'Select immutable revision', 'id': 'selection',
-             'env': {'REVISION': expr('inputs.revision || github.sha'), 'CHANNEL': expr("inputs.channel || 'tested'")},
+             'env': {'REVISION': expr('inputs.revision || github.sha')},
              'run': python('-c \'import os,re; s=os.environ["REVISION"]; assert re.fullmatch("[a-f0-9]{40}",s); '
                            'open(os.environ["GITHUB_OUTPUT"],"a").write("revision="+s+"\\n")\'')}]
         jobs = {'test': test}
@@ -241,8 +242,10 @@ def install(args):
         # PRs run the regression/policy test in a separate workflow. Forgejo
         # records a workflow with skipped release jobs as failed even when the
         # test job passed, so release-channels.yml must not trigger on PRs.
+        pr_test = copy.deepcopy(test)
+        pr_test['steps'][-1]['env']['REVISION'] = expr('github.sha')
         write('pr-checks.yml', {'name': 'PR automation checks', 'on': {'pull_request': {}},
-            'permissions': {'contents': 'read'}, 'jobs': {'test': test}})
+            'permissions': {'contents': 'read'}, 'jobs': {'test': pr_test}})
     monitor = job(None if github else 'nix-light')
     monitor['if'] = expr(trusted_ref)
     monitor['timeout-minutes'] = 120
