@@ -38,6 +38,26 @@ class ChannelWorkflowRefs(unittest.TestCase):
         return {name: json.loads((folder / (name + '.yml')).read_text().split('\n', 1)[1])
                 for name in names if (folder / (name + '.yml')).exists()}
 
+    def test_github_bootstraps_determinate_with_intel_macos_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.generated('github', directory, ('x86_64-linux', 'x86_64-darwin'))
+        for workflow in workflows.values():
+            for job in workflow['jobs'].values():
+                steps = job['steps']
+                installs = [step for step in steps if step.get('uses') == installer.INSTALL]
+                if not installs:
+                    continue
+                self.assertEqual(len(installs), 1)
+                step = installs[0]
+                self.assertEqual(step['with']['source-tag'], 'v3.24.1')
+                self.assertIn('parallel-eval', step['with']['extra-conf'])
+                self.assertIn('eval-cores = 2', step['with']['extra-conf'])
+                self.assertIn("runner.arch == 'X64'", step['if'])
+                fallback = [s for s in steps if s.get('uses') == installer.INTEL_DARWIN_INSTALL]
+                self.assertEqual(len(fallback), 1)
+                self.assertIn("runner.os == 'macOS'", fallback[0]['if'])
+                self.assertTrue(any(s.get('name') == 'Check Determinate Nix and daemon' for s in steps))
+
     def test_forgejo_cron_runs_monitor_inputs_build_and_retention_on_bare_default_ref(self):
         with tempfile.TemporaryDirectory() as directory:
             workflows = self.generated('forgejo', directory)
