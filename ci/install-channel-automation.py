@@ -5,6 +5,7 @@ Run locally with --directory, --forge, --repository, --branch and --policy.
 The input policy is explicit; this tool never guesses publication ownership.
 """
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -16,7 +17,8 @@ def multiline(dumper, value):
 
 HERE = Path(__file__).resolve().parent
 CHECKOUT = 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
-INSTALL = 'nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c'
+INSTALL = 'DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3'
+INTEL_DARWIN_INSTALL = 'nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c'
 # Paths that cannot change a built package. A repository that sets
 # githubCounterpartCi must still confirm none of these feed its build.
 COUNTERPART_PATHS_IGNORE = ['.forgejo/**', '.github/**', 'docs/**', '**/*.md', 'LICENSE*', 'COPYING*', 'DCO']
@@ -126,9 +128,20 @@ def install(args):
     def bootstrap(cores=1):
         if not github:
             return []
-        return [{'uses': INSTALL, 'with': {'nix_version': '2.34.7', 'enable_kvm': False,
-                     'nix_conf': 'experimental-features = nix-command flakes\naccept-flake-config = false\n'
-                                 'max-jobs = 1\ncores = '+str(cores)+'\n'}}]
+        intel = "runner.os == 'macOS' && runner.arch == 'X64'"
+        common = 'accept-flake-config = false\nmax-jobs = 1\ncores = '+str(cores)+'\n'
+        return [
+            {'uses': INSTALL, 'if': expr('!('+intel+')'),
+             'with': {'source-tag': 'v3.24.1', 'summarize': False, 'kvm': False,
+                      'extra-conf': 'experimental-features = nix-command flakes parallel-eval\n'
+                                    'eval-cores = 2\n'+common}},
+            # Determinate no longer supports Intel macOS; preserve that native build.
+            {'uses': INTEL_DARWIN_INSTALL, 'if': expr(intel),
+             'with': {'nix_version': '2.34.7', 'enable_kvm': False,
+                      'nix_conf': 'experimental-features = nix-command flakes\n'+common}},
+            {'name': 'Check Determinate Nix and daemon', 'if': expr('!('+intel+')'),
+             'run': "nix --version | grep -F 'Determinate Nix 3.24.1'\nnix store info --store daemon --json"},
+        ]
     def job(runner=None, cache=False):
         default_runner = 'ubuntu-24.04' if github else 'nix'
         result = {'runs-on': runner or default_runner, 'timeout-minutes': 360}
@@ -159,7 +172,7 @@ def install(args):
         test['steps'] = checkout()+bootstrap()+[
             {'name': 'Regression tests and complete inventory policy', 'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')},
             {'name': 'Select immutable revision', 'id': 'selection',
-             'env': {'REVISION': expr('inputs.revision || github.sha'), 'CHANNEL': expr("inputs.channel || 'tested'")},
+             'env': {'REVISION': expr('inputs.revision || github.sha')},
              'run': python('-c \'import os,re; s=os.environ["REVISION"]; assert re.fullmatch("[a-f0-9]{40}",s); '
                            'open(os.environ["GITHUB_OUTPUT"],"a").write("revision="+s+"\\n")\'')}]
         jobs = {'test': test}
@@ -229,8 +242,10 @@ def install(args):
         # PRs run the regression/policy test in a separate workflow. Forgejo
         # records a workflow with skipped release jobs as failed even when the
         # test job passed, so release-channels.yml must not trigger on PRs.
+        pr_test = copy.deepcopy(test)
+        pr_test['steps'][-1]['env']['REVISION'] = expr('github.sha')
         write('pr-checks.yml', {'name': 'PR automation checks', 'on': {'pull_request': {}},
-            'permissions': {'contents': 'read'}, 'jobs': {'test': test}})
+            'permissions': {'contents': 'read'}, 'jobs': {'test': pr_test}})
     monitor = job(None if github else 'nix-light')
     monitor['if'] = expr(trusted_ref)
     monitor['timeout-minutes'] = 120
