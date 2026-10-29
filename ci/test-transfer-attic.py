@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import errno
 import io
 import gzip
 import subprocess
@@ -14,6 +16,22 @@ spec.loader.exec_module(module)
 
 
 class TransferSafetyTests(unittest.TestCase):
+    def test_safe_failure_categories_do_not_expose_exception_details(self):
+        cases = [
+            (module.TransferSizeExceeded('secret'), 'exceeded ATTIC_MAX_CLOSURE_MIB'),
+            (OSError(errno.ENOSPC, 'secret'), 'disk space or quota'),
+            (OSError(errno.EDQUOT, 'secret'), 'disk space or quota'),
+            (OSError(errno.EACCES, 'secret'), 'transfer failed'),
+            (ValueError('secret'), 'transfer failed'),
+        ]
+        for error, expected in cases:
+            with self.subTest(error=error), patch.object(module, 'transfer', side_effect=error), \
+                    patch('sys.argv', ['transfer', 'export', '--directory', '/tmp/fixture']), \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(module.main(), 1)
+                self.assertIn(expected, stderr.getvalue())
+                self.assertNotIn('secret', stderr.getvalue())
+
     def test_oversize_stream_is_rejected_before_excess_is_written(self):
         target = io.BytesIO()
         with self.assertRaises(ValueError): module.copy_bounded(io.BytesIO(b'x' * 1025), target, 1024)
