@@ -101,6 +101,21 @@ def file_hash(url):
     return 'sha256-' + base64.b64encode(hashlib.sha256(content).digest()).decode()
 
 
+def check_diagnostics(stdout, stderr, returncode, unchanged):
+    """Expose bounded failure locations, never arbitrary updater output."""
+    groups = {'caddy', 'mopidy', 'scraping', 'redlib', 'manual', 'frontend'}
+    failed = set()
+    group = None
+    for line in (stdout + '\n' + stderr).splitlines():
+        match = re.fullmatch(r'\s*"group": "([a-z]+)",?', line)
+        if match:
+            group = match[1] if match[1] in groups else None
+        elif re.fullmatch(r'\s*"status": "failure",?', line) and group:
+            failed.add(group)
+    return {'exitCode': returncode, 'trackedFilesChanged': not unchanged,
+            'failedGroups': sorted(failed)}
+
+
 def scan():
     config = json.loads((ROOT / 'ci/update-monitor.json').read_text())
     files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0')
@@ -182,6 +197,7 @@ def scan():
             # Do not echo updater diagnostics into public reports.
             report['customChecks'].append({'command': command, 'success': result.returncode == 0 and unchanged,
                                            'outputHash': hashlib.sha256(result.stdout.encode()).hexdigest(),
+                                           'diagnostics': check_diagnostics(result.stdout, result.stderr, result.returncode, unchanged),
                                            'candidates': [line for line in result.stdout.splitlines()
                                                           if line.startswith(('candidate available ', 'UPDATE ', 'update available '))]})
             if result.returncode or not unchanged:
