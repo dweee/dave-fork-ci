@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Transfer selected Nix outputs between disposable jobs without running them."""
 import argparse
+import errno
 import gzip
 import hashlib
 import importlib.util
@@ -14,6 +15,10 @@ import sys
 spec = importlib.util.spec_from_file_location('public_closure', Path(__file__).with_name('public-closure.py'))
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
+
+
+class TransferSizeExceeded(ValueError):
+    """The uncompressed transfer stream exceeded its configured limit."""
 
 
 def roots(manifest):
@@ -31,7 +36,7 @@ def copy_bounded(source, target, limit):
     while chunk := source.read(1024 * 1024):
         total += len(chunk)
         if total > limit:
-            raise ValueError("Closure transfer exceeds ATTIC_MAX_CLOSURE_MIB")
+            raise TransferSizeExceeded()
         target.write(chunk)
     return total
 
@@ -103,7 +108,16 @@ def main():
         if not 1 <= mib <= 4096:
             raise ValueError("Closure transfer limit must be between 1 and 4096 MiB")
         transfer(args.mode, args.directory, mib * 1024 * 1024)
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except TransferSizeExceeded:
+        print("Nix closure transfer exceeded ATTIC_MAX_CLOSURE_MIB; no cache publication is authorized.", file=sys.stderr)
+        return 1
+    except OSError as error:
+        if error.errno in (errno.ENOSPC, errno.EDQUOT):
+            print("Nix closure transfer ran out of disk space or quota; no cache publication is authorized.", file=sys.stderr)
+        else:
+            print("Nix closure transfer failed; no cache publication is authorized.", file=sys.stderr)
+        return 1
+    except (ValueError, subprocess.SubprocessError):
         print("Nix closure transfer failed; no cache publication is authorized.", file=sys.stderr)
         return 1
     return 0
