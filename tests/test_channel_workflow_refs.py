@@ -38,6 +38,18 @@ class ChannelWorkflowRefs(unittest.TestCase):
         return {name: json.loads((folder / (name + '.yml')).read_text().split('\n', 1)[1])
                 for name in names if (folder / (name + '.yml')).exists()}
 
+    def test_forgejo_determinate_policy_rejects_unsafe_settings(self):
+        invalid = [
+            ('forgejo', {'forgejoDeterminateImage': 'nixos/nix:latest', 'forgejoDeterminateLabels': ['nix']}),
+            ('forgejo', {'forgejoDeterminateImage': 'sha256:' + 'a' * 64, 'forgejoDeterminateLabels': ['braco']}),
+            ('forgejo', {'forgejoDeterminateLabels': ['nix']}),
+            ('github', {'forgejoDeterminateImage': 'sha256:' + 'a' * 64, 'forgejoDeterminateLabels': ['nix']}),
+        ]
+        for forge, policy in invalid:
+            with self.subTest(forge=forge, policy=policy), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(SystemExit):
+                    self.generated(forge, directory, extra=policy)
+
     def test_forgejo_opt_in_only_changes_selected_container_labels(self):
         image = 'sha256:' + 'a' * 64
         with tempfile.TemporaryDirectory() as directory:
