@@ -16,6 +16,18 @@ spec.loader.exec_module(module)
 
 
 class TransferSafetyTests(unittest.TestCase):
+    def test_transfer_limit_accepts_explicit_eight_gib_but_rejects_more(self):
+        for value, expected in [('8192', 0), ('8193', 1), ('0', 1)]:
+            with self.subTest(value=value), patch.dict(os.environ, {'ATTIC_MAX_CLOSURE_MIB': value}), \
+                    patch.object(module, 'transfer') as transfer, \
+                    patch('sys.argv', ['transfer', 'export', '--directory', '/tmp/fixture']), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(module.main(), expected)
+                if not expected:
+                    self.assertEqual(transfer.call_args.args[2], 8192 * 1024 * 1024)
+                else:
+                    transfer.assert_not_called()
+
     def test_safe_failure_categories_do_not_expose_exception_details(self):
         cases = [
             (module.TransferSizeExceeded('secret'), 'exceeded ATTIC_MAX_CLOSURE_MIB'),
