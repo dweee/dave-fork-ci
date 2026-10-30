@@ -105,8 +105,8 @@ def main():
     args = parser.parse_args()
     try:
         mib = int(os.environ.get("ATTIC_MAX_CLOSURE_MIB") or "2048")
-        if not 1 <= mib <= 4096:
-            raise ValueError("Closure transfer limit must be between 1 and 4096 MiB")
+        if not 1 <= mib <= 8192:
+            raise ValueError("Closure transfer limit must be between 1 and 8192 MiB")
         transfer(args.mode, args.directory, mib * 1024 * 1024)
     except TransferSizeExceeded:
         print("Nix closure transfer exceeded ATTIC_MAX_CLOSURE_MIB; no cache publication is authorized.", file=sys.stderr)
