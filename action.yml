@@ -10,6 +10,9 @@ inputs:
   work-directory:
     description: New private scratch directory; must not already exist
     required: true
+  check-workflow:
+    description: Workflow file dispatched on the candidate branch by the gate phase
+    default: pr-checks.yml
   base:
     description: Exact tested base revision for promotion
     default: ''
@@ -43,6 +46,7 @@ runs:
         WORK: ${{ inputs.work-directory }}
         BASE: ${{ inputs.base }}
         CANDIDATE: ${{ inputs.candidate }}
+        CHECK_WORKFLOW: ${{ inputs.check-workflow }}
       run: |
         python3 "$GITHUB_ACTION_PATH/bin/fork_ci.py" "$PHASE" \
-          --target "$TARGET" --work "$WORK" --base "$BASE" --candidate "$CANDIDATE"
+          --target "$TARGET" --work "$WORK" --base "$BASE" --candidate "$CANDIDATE" --workflow "$CHECK_WORKFLOW"
