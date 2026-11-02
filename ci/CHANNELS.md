@@ -59,7 +59,7 @@ Required repository configuration:
   one job at a time: it queues behind other repositories' aarch64 jobs.
 - Schedules keep their cadence (release channels nightly, input updates every six
   hours) but start at a per-repository offset derived from a SHA-256 of
-  `owner/name`: release channels at a minute in 02:00-06:59 UTC, input updates at a
+  `owner/name`: release channels at a minute of the UTC day (00:00-23:59), input updates at a
   minute in each six-hour slot starting at hour 0-5 UTC. The offset is stable, so
   repositories no longer fire in the same minute.
 - On Forgejo, `UPDATE_TOKEN` belongs to the restricted `flakey-updater` account. A
