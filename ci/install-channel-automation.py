@@ -78,6 +78,57 @@ def updates_cron(repository):
     return f'{minute} ' + ','.join(str(offset + 6 * slot) for slot in range(4)) + ' * * *'
 
 
+UNACQUIRED_RETRY = '''set -euo pipefail
+jobs=$(gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest" --jq '.jobs[]' | jq -s .)
+# GitHub reports a job that never got a hosted runner as cancelled (or failed) with no steps.
+unacquired='[]'
+for id in $(jq -r '.[] | select((.conclusion == "failure" or .conclusion == "cancelled") and (.steps | length) == 0) | .id' <<< "$jobs"); do
+  if gh api "repos/$REPOSITORY/check-runs/$id/annotations" --jq '.[].message' | grep -q 'was not acquired by Runner'; then
+    unacquired=$(jq -c --argjson id "$id" '. + [$id]' <<< "$unacquired")
+  fi
+done
+count=$(jq length <<< "$unacquired")
+real=$(jq --argjson ids "$unacquired" '[.[] | select(.conclusion == "failure" and (.id | IN($ids[]) | not))] | length' <<< "$jobs")
+echo "never acquired a runner: $count; other failed jobs: $real"
+# Only an infrastructure-only failure is retried; any real failure stays red.
+if [ "$count" -gt 0 ] && [ "$real" -eq 0 ]; then
+  gh run rerun "$RUN_ID" --repo "$REPOSITORY" --failed
+fi
+'''
+
+
+def install_unacquired_retry(root, workflow_dir, write):
+    """Rerun, once, a GitHub run whose every failed job never got a hosted runner.
+
+    GitHub-hosted macOS jobs sometimes fail with "The job was not acquired by
+    Runner of type hosted even after multiple attempts" before any step starts.
+    No repository code is checked out or executed; a failure with any started
+    step, or a second attempt, is left alone.
+    """
+    names = []
+    for path in sorted(workflow_dir.glob('*.y*ml')):
+        if path.name == 'retry-unacquired-runners.yml':
+            continue
+        # Generated files start with a comment; the workflow name is a plain top-level scalar.
+        match = re.search(r'^name:[ \t]*(.+?)[ \t]*$', path.read_text(), re.M)
+        if match:
+            names.append(match.group(1).strip('\'"'))
+    if not names:
+        return
+    write('retry-unacquired-runners.yml', {
+        'name': 'Retry unacquired runners',
+        'on': {'workflow_run': {'workflows': sorted(set(names)), 'types': ['completed']}},
+        'permissions': {'actions': 'write'},
+        'jobs': {'retry': {
+            'if': expr("github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt == 1 && "
+                       "github.event.workflow_run.repository.full_name == github.repository"),
+            'runs-on': 'ubuntu-24.04', 'timeout-minutes': 10,
+            'steps': [{'name': 'Rerun only runner-acquisition failures',
+                       'env': {'GH_TOKEN': expr('github.token'), 'REPOSITORY': expr('github.repository'),
+                               'RUN_ID': expr('github.event.workflow_run.id')},
+                       'run': UNACQUIRED_RETRY}]}}})
+
+
 def install(args):
     import yaml
     yaml.SafeDumper.add_representer(str, multiline)
@@ -291,6 +342,8 @@ def install(args):
           'on': {'schedule': [{'cron': updates_cron(args.repository)}], 'workflow_dispatch': {}},
           'permissions': {'contents': 'write', 'issues': 'write', 'pull-requests': 'write', **({'actions': 'write'} if github else {})},
           'concurrency': {'group': 'scheduled-input-updates', 'cancel-in-progress': False}, 'jobs': jobs})
+    if github:
+        install_unacquired_retry(root, workflow_dir, write)
     if not github and not source_only:
         print('Next: grant the restricted updater account write access to ' + args.repository +
               ' (idempotent, needs an admin token): ci/ensure-updater-access.py --repository ' + args.repository)
