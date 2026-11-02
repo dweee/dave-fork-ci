@@ -153,6 +153,16 @@ class Installer(unittest.TestCase):
                         for setting in ['connect-timeout = 20', 'stalled-download-timeout = 120', 'download-attempts = 5']:
                             self.assertIn(setting, job['env']['NIX_CONFIG'])
 
+    def test_required_status_check_names_are_stable(self):
+        # Branch protection requires "PR automation checks / test (pull_request)"
+        # (and "Automation checks / test" for repositories without release targets).
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.install(directory, 'forgejo')
+        pr = workflows['pr-checks.yml']
+        self.assertEqual((pr['name'], list(pr['jobs']), pr['on']), ('PR automation checks', ['test'], {'pull_request': {}}))
+        self.assertNotIn('if', pr['jobs']['test'])
+        self.assertNotIn('release-channels.yml', {n for n, w in workflows.items() if 'pull_request' in w['on']})
+
     def test_tracked_bytecode_is_removed_and_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             self.install(directory, 'forgejo', existing_ignore='result\n', tracked_pyc=True)
