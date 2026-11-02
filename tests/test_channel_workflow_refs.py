@@ -70,6 +70,14 @@ class ChannelWorkflowRefs(unittest.TestCase):
                     self.assertFalse(steps)
         self.assertGreater(changed, 0)
 
+    def test_github_linux_builders_use_every_core_and_macos_stays_serial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = self.generated('github', directory, ('x86_64-linux', 'aarch64-linux', 'aarch64-darwin'))['release-channels']['jobs']
+        for system, cores in {'x86_64_linux': 'cores = 0', 'aarch64_linux': 'cores = 0', 'aarch64_darwin': 'cores = 1'}.items():
+            installs = [s for s in jobs['build_' + system]['steps'] if s.get('uses') == installer.INSTALL]
+            self.assertIn(cores + '\n', installs[0]['with']['extra-conf'], system)
+            self.assertIn('max-jobs = 1\n', installs[0]['with']['extra-conf'], system)
+
     def test_github_bootstraps_determinate_with_intel_macos_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             workflows = self.generated('github', directory, ('x86_64-linux', 'x86_64-darwin'))

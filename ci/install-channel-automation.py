@@ -275,9 +275,10 @@ def install(args):
             native.update(needs=['test'], outputs={'proof': expr('steps.release.outputs.proof')},
                           **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
             # Keep derivations serial to bound memory, while allowing the
-            # x86 Linux builder to use every CPU assigned to its runner.
+            # Linux builders to use every CPU assigned to their runners. The
+            # macOS runners have 7 GB for 3 cores, so they stay at one core.
             native['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(
-                cores=0 if system == 'x86_64-linux' else 1, runner=native['runs-on'])+[
+                cores=0 if system in {'x86_64-linux', 'aarch64-linux'} else 1, runner=native['runs-on'])+[
                 {'name': 'Configure job-local private cache reader',
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
                  'run': python('ci/configure-attic-read.py')},
