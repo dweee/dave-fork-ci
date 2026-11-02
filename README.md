@@ -4,6 +4,11 @@ Reusable upstream maintenance for GitHub forks with Nix packaging and local chan
 
 The composite [action.yml](action.yml) handles Git preparation/promotion without executing candidate code. The reusable [reusable workflow](.github/workflows/upstream-sync.yml) connects it to isolated native builds, checks and Attic publication. A small generated caller is the only workflow each consuming fork needs.
 
+## Remotes and which is canonical
+
+- **GitHub `dweee/dave-fork-ci` is canonical for this tree.** Its CI runs there (the ruleset requires the `test` check), and the generated fork callers reference `dweee/dave-fork-ci/.github/workflows/upstream-sync.yml` at a pinned commit, so releases are cut from here. Land changes through a GitHub PR.
+- **Forgejo `d/dave-fork-ci` (remote `gmf`) is the private mirror used by the fleet repositories.** It runs no CI. The installer and the helper copies it generates for the Forgejo repositories are taken from a checkout of this tree. After a GitHub change lands, bring Forgejo in line with a Forgejo PR that merges GitHub `main` into Forgejo `main` with a merge commit. Never force-push either branch and never commit to Forgejo `main` first: the two histories would diverge again.
+
 ## Behavior
 
 1. Poll the configured public upstream branch, latest stable GitHub release, or both. A six-hour caller schedule works without upstream cooperation; an optional `repository_dispatch` can wake it sooner. A release in somebody else's repository does not directly trigger your fork's workflow. Drafts and prereleases are excluded.
