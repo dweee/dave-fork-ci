@@ -64,6 +64,43 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(ci.text(self.repo, 'show', '-s', '--format=%an <%ae>', candidate), 'dave <git@d.monke.fail>')
         self.assertEqual(ci.text(self.repo, 'rev-parse', candidate + '~2'), self.base)
 
+    def gate_args(self):
+        import argparse
+        return argparse.Namespace(repository='owner/tool', candidate='c' * 40, workflow='pr-checks.yml', check='test')
+
+    def run_for(self, status, conclusion='success', app='github-actions'):
+        return {'check_runs': [{'head_sha': 'c' * 40, 'status': status, 'conclusion': conclusion, 'app': {'slug': app}}]}
+
+    def test_gate_dispatches_the_check_on_the_candidate_branch_and_waits_for_success(self):
+        calls = []
+        replies = iter([{}, {}, self.run_for('queued', None), self.run_for('completed')])
+        def call(method, endpoint, payload=None):
+            calls.append((method, endpoint, payload))
+            return next(replies)
+        with patch.object(ci, 'github_call', call), patch.object(ci, 'emit') as emit:
+            ci.gate(self.gate_args(), sleep=lambda n: None)
+        self.assertEqual(calls[1], ('POST', 'repos/owner/tool/actions/workflows/pr-checks.yml/dispatches',
+                                    {'ref': 'sync/upstream/' + 'c' * 40}))
+        emit.assert_called_with({'gated': 'passed'})
+
+    def test_gate_rejects_failed_foreign_and_missing_checks(self):
+        for runs in [self.run_for('completed', 'failure'), self.run_for('completed', 'success', app='someone-else')]:
+            replies = iter([{}, {}, runs])
+            with self.subTest(runs=runs), patch.object(ci, 'github_call', lambda *a, **k: next(replies)):
+                with self.assertRaises(ci.Blocked):
+                    ci.gate(self.gate_args(), sleep=lambda n: None, timeout=0)
+        replies = iter([{}, {}] + [{'check_runs': []}] * 5)
+        with patch.object(ci, 'github_call', lambda *a, **k: next(replies)):
+            with self.assertRaises(ci.Blocked):
+                ci.gate(self.gate_args(), sleep=lambda n: None, timeout=30)
+
+    def test_gate_is_skipped_when_the_workflow_cannot_be_dispatched(self):
+        for replies in [[None], [{}, None]]:
+            replies = iter(replies)
+            with patch.object(ci, 'github_call', lambda *a, **k: next(replies)), patch.object(ci, 'emit') as emit:
+                ci.gate(self.gate_args(), sleep=lambda n: None)
+            emit.assert_called_with({'gated': 'skipped'})
+
     def test_promotion_rejects_main_advanced_since_build(self):
         candidate = self.candidate(self.upstream())
         with self.assertRaises(ci.Blocked):

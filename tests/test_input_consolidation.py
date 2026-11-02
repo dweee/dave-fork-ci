@@ -37,10 +37,25 @@ class Consolidation(unittest.TestCase):
     def test_missing_checks_are_dispatched_once_on_candidate_branch(self):
         with patch.object(a, 'api', return_value={'workflow_runs': []}) as api:
             a.dispatch_input_checks(self.rules, '/repos/owner/tool', self.pr(1))
-        self.assertEqual(api.call_args.args, (self.rules, 'POST', '/repos/owner/tool/actions/workflows/native.yml/dispatches', {'ref': 'automation/input-updates-1'}))
+        posts = [c.args for c in api.call_args_list if c.args[1] == 'POST']
+        self.assertEqual(posts, [
+            (self.rules, 'POST', '/repos/owner/tool/actions/workflows/native.yml/dispatches', {'ref': 'automation/input-updates-1'}),
+            (self.rules, 'POST', '/repos/owner/tool/actions/workflows/pr-checks.yml/dispatches', {'ref': 'automation/input-updates-1'})])
         with patch.object(a, 'api', return_value={'workflow_runs': [{'id': 1, 'conclusion': 'failure'}]}) as api:
             a.dispatch_input_checks(self.rules, '/repos/owner/tool', self.pr(1))
-        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_count, 2)
+
+    def test_the_required_pr_check_is_dispatched_even_when_not_listed_and_tolerates_old_installs(self):
+        error = a.HTTPError('u', 422, 'no dispatch trigger', {}, None)
+        def api(rules, method, endpoint, *rest):
+            if method == 'POST' and 'pr-checks' in endpoint:
+                raise error
+            return {'workflow_runs': []}
+        with patch.object(a, 'api', side_effect=api):
+            a.dispatch_input_checks(self.rules, '/repos/owner/tool', self.pr(1))
+        with patch.object(a, 'api', side_effect=api):
+            with self.assertRaises(a.HTTPError):
+                a.dispatch_input_checks(dict(self.rules, inputCheckWorkflows=['pr-checks.yml']), '/repos/owner/tool', self.pr(1))
 
     def test_dispatch_failure_keeps_old_candidates_open(self):
         with patch.object(a, 'api', side_effect=RuntimeError('dispatch refused')) as api:

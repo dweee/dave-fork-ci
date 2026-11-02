@@ -9,7 +9,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from history_filter import filter_history
 
@@ -351,6 +353,69 @@ def verify(repo, base, candidate, target, policy):
             raise Blocked('Candidate does not contain the recorded upstream commit')
 
 
+def github_call(method, endpoint, payload=None):
+    """Repository-scoped call to api.github.com with the job token; JSON in and out."""
+    token = os.environ.get('GH_TOKEN', '')
+    if not token or any(c.isspace() or ord(c) < 32 for c in token):
+        raise Blocked('Repository-scoped job token is missing')
+    request = urllib.request.Request(
+        'https://api.github.com/' + endpoint, method=method,
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'dave-fork-ci',
+                 'Authorization': 'Bearer ' + token, 'X-GitHub-Api-Version': '2022-11-28'})
+    try:
+        with urllib.request.build_opener(NoMetadataRedirect()).open(request, timeout=30) as response:
+            body = response.read()
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as error:
+        error.close()
+        if error.code in (404, 422):
+            return None
+        raise Blocked('GitHub API call failed with status ' + str(error.code)) from None
+
+
+def gate(args, sleep=time.sleep, timeout=1800):
+    """Run the repository's required check on the candidate branch before promotion.
+
+    A ruleset that requires a status check accepts a fast-forward push whose
+    commit already passed that check on another branch, but the Actions token
+    cannot bypass it. pull_request runs never start for a branch only this job
+    pushed, so dispatch the PR check workflow on the immutable candidate branch
+    and wait for its check run on the exact commit. The workflow is repository
+    code from the fork's own reviewed default branch history; this job executes
+    nothing from the candidate.
+    """
+    if not REPO.fullmatch(args.repository) or not SHA.fullmatch(args.candidate):
+        raise Blocked('Invalid repository or candidate')
+    if not re.fullmatch(r'[A-Za-z0-9_-]+[.]ya?ml', args.workflow) or not re.fullmatch(r'[A-Za-z0-9_. -]{1,60}', args.check):
+        raise Blocked('Invalid check workflow or name')
+    base = 'repos/' + args.repository
+    branch = 'sync/upstream/' + args.candidate
+    workflow = github_call('GET', base + '/actions/workflows/' + args.workflow)
+    if workflow is None:
+        print('No ' + args.workflow + ' workflow; promotion relies on the repository ruleset as configured.')
+        emit({'gated': 'skipped'})
+        return
+    if github_call('POST', base + '/actions/workflows/' + args.workflow + '/dispatches', {'ref': branch}) is None:
+        # No workflow_dispatch trigger on that branch yet: let the push decide.
+        print(args.workflow + ' cannot be dispatched on the candidate branch; promotion relies on the repository ruleset as configured.')
+        emit({'gated': 'skipped'})
+        return
+    waited = 0
+    while waited <= timeout:
+        runs = github_call('GET', base + '/commits/' + args.candidate + '/check-runs?check_name=' + urllib.parse.quote(args.check) + '&per_page=100')
+        runs = [r for r in (runs or {}).get('check_runs', [])
+                if r.get('head_sha') == args.candidate and (r.get('app') or {}).get('slug') == 'github-actions']
+        if any(r.get('status') == 'completed' and r.get('conclusion') == 'success' for r in runs):
+            emit({'gated': 'passed'})
+            return
+        if runs and all(r.get('status') == 'completed' for r in runs):
+            raise Blocked('Required check ' + args.check + ' did not pass on the candidate')
+        sleep(15)
+        waited += 15
+    raise Blocked('Timed out waiting for required check ' + args.check)
+
+
 def promote(args):
     if not REPO.fullmatch(args.repository):
         raise Blocked('Invalid GitHub repository')
@@ -371,18 +436,20 @@ def promote(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=['prepare', 'promote'])
+    parser.add_argument('phase', choices=['prepare', 'promote', 'gate'])
     parser.add_argument('--repository', default=os.environ.get('GITHUB_REPOSITORY', ''))
     parser.add_argument('--target', default='main')
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--base', default='')
     parser.add_argument('--candidate', default='')
+    parser.add_argument('--workflow', default='pr-checks.yml')
+    parser.add_argument('--check', default='test')
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        if args.phase == 'promote' and (not SHA.fullmatch(args.base) or not SHA.fullmatch(args.candidate)):
+        if args.phase in ('promote', 'gate') and (not SHA.fullmatch(args.base) or not SHA.fullmatch(args.candidate)):
             raise Blocked('Promotion requires exact revisions')
-        (prepare if args.phase == 'prepare' else promote)(args)
+        {'prepare': prepare, 'promote': promote, 'gate': gate}[args.phase](args)
     except (Blocked, OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as error:
         # Do not emit subprocess output, HTTP bodies or token-bearing values.
         print('Fork maintenance stopped: ' + (str(error) if isinstance(error, Blocked) else 'invalid input or unavailable dependency'), file=sys.stderr)

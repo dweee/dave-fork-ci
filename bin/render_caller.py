@@ -20,6 +20,8 @@ jobs:
   upstream:
     permissions:
       contents: write
+      actions: write
+      checks: read
     uses: REPOSITORY/.github/workflows/upstream-sync.yml@REVISION
     with:
       tool-repository: REPOSITORY

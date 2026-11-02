@@ -36,6 +36,10 @@ on:
         description: Use HTTP/2 when reading the public cache; false selects HTTPS over HTTP/1.1
         default: true
         type: boolean
+      check-workflow:
+        description: Workflow file whose `test` job gates promotion; dispatched on the candidate branch
+        default: pr-checks.yml
+        type: string
       max-closure-mib:
         description: Uncompressed export limit for each platform
         default: 4096
@@ -245,12 +249,46 @@ jobs:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: python3 controller/ci/push-attic.py --outputs attic-transfer/outputs.txt
 
-  promote:
+  gate:
     needs: [prepare, build, cache]
     if: >-
       always() && !cancelled() && inputs.auto-merge &&
       vars.FORK_CI_AUTO_MERGE == 'true' && needs.prepare.result == 'success' &&
       needs.prepare.outputs.changed == 'true' && needs.build.result == 'success' &&
+      ((inputs.cache && needs.cache.result == 'success') ||
+       (!inputs.cache && needs.cache.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ inputs.tool-repository }}
+          ref: ${{ inputs.tool-revision }}
+          path: controller
+          persist-credentials: false
+      - id: gate
+        uses: ./controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          phase: gate
+          check-workflow: ${{ inputs.check-workflow }}
+          target-branch: ${{ github.event.repository.default_branch }}
+          work-directory: ${{ runner.temp }}/fork-gate
+          base: ${{ needs.prepare.outputs.base }}
+          candidate: ${{ needs.prepare.outputs.candidate }}
+
+  promote:
+    needs: [prepare, build, cache, gate]
+    if: >-
+      always() && !cancelled() && inputs.auto-merge &&
+      vars.FORK_CI_AUTO_MERGE == 'true' && needs.prepare.result == 'success' &&
+      needs.prepare.outputs.changed == 'true' && needs.build.result == 'success' &&
+      needs.gate.result == 'success' &&
       ((inputs.cache && needs.cache.result == 'success') ||
        (!inputs.cache && needs.cache.result == 'skipped'))
     permissions:
