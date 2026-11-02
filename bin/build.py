@@ -94,6 +94,11 @@ def main():
                        cwd=args.source, env=env, check=True)
     for command in row.get('tests', []):
         subprocess.run(command, cwd=args.source, env=env, check=True)
+    # Advisory commands report problems in upstream-owned code (for example
+    # formatting) without rejecting an otherwise tested upstream sync.
+    for command in row.get('advisory_tests', []):
+        if subprocess.run(command, cwd=args.source, env=env).returncode:
+            print('::warning::Advisory check failed and does not block publication: ' + ' '.join(command[-3:]))
     if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.source, env=env).strip() != head:
         raise Blocked('Tests changed the candidate revision')
     subprocess.run(['git', 'diff', '--no-ext-diff', '--no-textconv', '--exit-code', 'HEAD', '--ignore-submodules=none', '--'],

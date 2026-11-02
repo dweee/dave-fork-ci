@@ -14,6 +14,8 @@ The composite [action.yml](action.yml) handles Git preparation/promotion without
 
 When `cache: false` is explicitly selected, builds/checks remain mandatory and cache publication is skipped. Automatic promotion additionally requires both `auto-merge: true` and repository variable `FORK_CI_AUTO_MERGE=true`. The entire workflow also requires `FORK_CI_ENABLED=true`. The reusable workflow is installed; consumers explicitly enable it using those variables.
 
+Each matrix row's `tests` must pass. Commands under `advisory_tests` (for example `cargo fmt --check` on upstream-owned code) run after them and only print a warning when they fail; the HEAD and tree-cleanliness checks still apply.
+
 Builds reject lockfile updates, and tracked source/submodule changes or a changed Git HEAD during tests prevent a success manifest. Upstream dependency/hash changes that need packaging repair remain a review candidate; the workflow does not test an implicitly edited tree and then promote a different commit.
 
 ## Adopting a fork later

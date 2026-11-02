@@ -116,6 +116,24 @@ class BuildAndWorkflowTests(unittest.TestCase):
                 with self.assertRaises(fork_ci.Blocked):
                     build.main()
 
+    def test_failed_advisory_command_warns_without_blocking(self):
+        import copy
+        import subprocess
+        policy = copy.deepcopy(POLICY)
+        policy['matrix'][0]['advisory_tests'] = [['fmt-check']]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.fork-ci.json').write_text(json.dumps(policy))
+            outputs = root / 'outputs.txt'
+            def run(command, **kwargs):
+                return subprocess.CompletedProcess(command, 1 if command == ['fmt-check'] else 0)
+            with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch.object(build.subprocess, 'check_output', return_value=b'[{"outputs":{"out":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package"}}]'), \
+                 patch.object(build.subprocess, 'run', side_effect=run):
+                build.main()
+            self.assertTrue(outputs.exists())
+
     def test_failed_regression_command_never_writes_success_manifest(self):
         import copy
         import subprocess

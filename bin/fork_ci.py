@@ -76,9 +76,10 @@ def validate_policy(policy):
         if not all(isinstance(a, str) and ATTR.fullmatch(a)
                    for a in row['packages'] + row.get('checks', [])):
             raise Blocked('Package/check names must be plain flake attribute paths')
-        if not isinstance(row.get('tests', []), list):
-            raise Blocked('Tests must be argument vectors')
-        for command in row.get('tests', []):
+        for key in ('tests', 'advisory_tests'):
+            if not isinstance(row.get(key, []), list):
+                raise Blocked('Tests must be argument vectors')
+        for command in row.get('tests', []) + row.get('advisory_tests', []):
             if not isinstance(command, list) or not command or not all(
                     isinstance(a, str) and a and '\0' not in a for a in command):
                 raise Blocked('Tests must be nonempty argument vectors')
