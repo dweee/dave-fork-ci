@@ -43,6 +43,13 @@ HELPERS = ['release-channel.py', 'test-release-channel.py', 'update-inputs.py',
            'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-attic-read.py']
 
 
+# Bounded Nix downloads: fail fast on a dead connection and retry transient DNS,
+# cache and CDN errors instead of stalling a job for hours.
+NIX_TRANSPORT_CONF = 'connect-timeout = 20\nstalled-download-timeout = 120\ndownload-attempts = 5\n'
+NIX_CONF_FORGEJO = ('experimental-features = nix-command flakes\naccept-flake-config = false\n'
+                    'sandbox = false\nfilter-syscalls = false\n' + NIX_TRANSPORT_CONF)
+
+
 def expr(value):
     return '${{ ' + value + ' }}'
 
@@ -62,10 +69,12 @@ def schedule_slots(repository):
 
     Every repository keeps the same cadence, but its slot is derived from a
     SHA-256 of `owner/name`, so runs do not all queue in the same minute.
-    Returns (release hour 2-6 UTC, release minute, updates hour offset 0-5, updates minute).
+    Returns (release hour 0-23 UTC, release minute, updates hour offset 0-5, updates minute).
+    The heavy release run is spread over the whole day, not just the night.
     """
     digest = hashlib.sha256(repository.encode()).digest()
-    return 2 + digest[0] % 5, digest[1] % 60, digest[2] % 6, digest[3] % 60
+    minute_of_day = int.from_bytes(digest[0:2], 'big') % 1440
+    return minute_of_day // 60, minute_of_day % 60, digest[2] % 6, digest[3] % 60
 
 
 def release_cron(repository):
@@ -159,6 +168,13 @@ def install(args):
     for name in ['push-attic.py']:
         if not (ci / name).exists():
             shutil.copy2(HERE / name, ci / name)
+    # Bytecode must never be tracked: running the helpers rewrites it.
+    shutil.rmtree(ci / '__pycache__', ignore_errors=True)
+    ignore = root / '.gitignore'
+    lines = ignore.read_text().splitlines() if ignore.exists() else []
+    missing = [pattern for pattern in ('__pycache__/', '*.pyc') if pattern not in lines]
+    if missing:
+        ignore.write_text('\n'.join(lines + missing) + '\n')
     (ci / 'channels.json').write_text(json.dumps(config, indent=2)+'\n')
     hashes = {name: hashlib.sha256((ci/name).read_bytes()).hexdigest() for name in HELPERS}
     (ci / 'channel-tool-hashes.json').write_text(json.dumps(hashes, indent=2)+'\n')
@@ -210,9 +226,11 @@ def install(args):
         ]
     def job(runner=None, cache=False):
         default_runner = 'ubuntu-24.04' if github else 'nix'
-        result = {'runs-on': runner or default_runner, 'timeout-minutes': 360}
+        # Bytecode written into a checkout that tracks ci/__pycache__ makes the
+        # clean-checkout checks fail, so no job ever writes it.
+        result = {'runs-on': runner or default_runner, 'timeout-minutes': 360, 'env': {'PYTHONDONTWRITEBYTECODE': '1'}}
         if not github:
-            result['env'] = {'NIX_CONFIG': 'experimental-features = nix-command flakes\naccept-flake-config = false\nsandbox = false\nfilter-syscalls = false\n'}
+            result['env']['NIX_CONFIG'] = NIX_CONF_FORGEJO
         if not github and result['runs-on'] in {'nix', 'nix-light'}:
             result['container'] = {'image': 'nixos/nix@sha256:7a007c766426c1877758ddc5cb87a965ac131fc78c582ce0083d922d51ae945c'}
             if image and result['runs-on'] in labels:
@@ -411,7 +429,7 @@ Required repository configuration:
   one job at a time: it queues behind other repositories' aarch64 jobs.
 - Schedules keep their cadence (release channels nightly, input updates every six
   hours) but start at a per-repository offset derived from a SHA-256 of
-  `owner/name`: release channels at a minute in 02:00-06:59 UTC, input updates at a
+  `owner/name`: release channels at a minute of the UTC day (00:00-23:59), input updates at a
   minute in each six-hour slot starting at hour 0-5 UTC. The offset is stable, so
   repositories no longer fire in the same minute.
 - On Forgejo, `UPDATE_TOKEN` belongs to the restricted `flakey-updater` account. A

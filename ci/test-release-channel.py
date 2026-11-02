@@ -67,7 +67,7 @@ class Gates(unittest.TestCase):
         diagnostic = ('building\nerror: unable to download \'https://user:fixture-secret@host/x\': '
                       'HTTP error 503 for /nix/store/' + 'a'*32 + '-private ghp_abc123')
         result = subprocess.CompletedProcess(['nix'], 1, stdout='', stderr=diagnostic)
-        with patch.object(c.subprocess, 'run', return_value=result):
+        with patch.object(c.subprocess, 'run', return_value=result), patch.object(c, 'TRANSPORT_RETRY_DELAYS', ()):
             with self.assertRaises(c.CommandFailure) as raised: c.run('nix', 'build')
         text = str(raised.exception)
         self.assertTrue(text.startswith('transport (exit 1): error: unable to download'))

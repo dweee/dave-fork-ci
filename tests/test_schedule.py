@@ -24,9 +24,9 @@ REPOSITORIES = ['d/' + name for name in [
 class Schedule(unittest.TestCase):
     def test_known_offsets_are_pinned(self):
         # A change here moves a repository's schedule; review it deliberately.
-        self.assertEqual(installer.release_cron('d/sable'), '13 5 * * *')
+        self.assertEqual(installer.release_cron('d/sable'), '1 14 * * *')
         self.assertEqual(installer.updates_cron('d/sable'), '15 1,7,13,19 * * *')
-        self.assertEqual(installer.release_cron('d/fleet-sentry'), '3 3 * * *')
+        self.assertEqual(installer.release_cron('d/fleet-sentry'), '59 23 * * *')
         self.assertEqual(installer.updates_cron('d/fleet-sentry'), '53 3,9,15,21 * * *')
 
     def test_offsets_do_not_depend_on_the_hash_seed(self):
@@ -39,11 +39,11 @@ class Schedule(unittest.TestCase):
                    for seed in ['1', '2', 'random']}
         self.assertEqual(len(results), 1)
 
-    def test_release_runs_nightly_between_02_and_06_utc(self):
+    def test_release_runs_once_a_day_at_any_hour(self):
         for repository in REPOSITORIES + ['fixture/' + str(number) for number in range(500)]:
             minute, hour, *rest = installer.release_cron(repository).split()
             self.assertEqual(rest, ['*', '*', '*'])
-            self.assertIn(int(hour), range(2, 7))
+            self.assertIn(int(hour), range(24))
             self.assertIn(int(minute), range(60))
 
     def test_updates_keep_a_six_hour_cadence(self):
@@ -63,7 +63,10 @@ class Schedule(unittest.TestCase):
         self.assertGreaterEqual(len(updates), len(REPOSITORIES) - 1)
         sample = {installer.release_cron('fixture/' + str(number)) for number in range(1000)}
         self.assertGreater(len(sample), 200)
-        self.assertEqual({int(cron.split()[1]) for cron in sample}, {2, 3, 4, 5, 6})
+        self.assertEqual({int(cron.split()[1]) for cron in sample}, set(range(24)))
+        # No two repositories of the real fleet share a release hour more than twice.
+        hours = [int(installer.release_cron(r).split()[1]) for r in REPOSITORIES]
+        self.assertLessEqual(max(hours.count(h) for h in set(hours)), 2)
 
     def test_workflows_use_the_derived_schedule_in_both_forges(self):
         for forge in ['forgejo', 'github']:
@@ -79,7 +82,7 @@ class Schedule(unittest.TestCase):
                     installer.install(args)
                 folder = root / ('.github/workflows' if forge == 'github' else '.forgejo/workflows')
                 load = lambda name: json.loads((folder / name).read_text().split('\n', 1)[1])
-                self.assertEqual(load('release-channels.yml')['on']['schedule'], [{'cron': '13 5 * * *'}])
+                self.assertEqual(load('release-channels.yml')['on']['schedule'], [{'cron': '1 14 * * *'}])
                 self.assertEqual(load('scheduled-updates.yml')['on']['schedule'], [{'cron': '15 1,7,13,19 * * *'}])
                 self.assertIn('SHA-256', (root / 'ci/CHANNELS.md').read_text())
 
