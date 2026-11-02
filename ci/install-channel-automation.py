@@ -314,7 +314,10 @@ def install(args):
         # test job passed, so release-channels.yml must not trigger on PRs.
         pr_test = copy.deepcopy(test)
         pr_test['steps'][-1]['env']['REVISION'] = expr('github.sha')
-        write('pr-checks.yml', {'name': 'PR automation checks', 'on': {'pull_request': {}},
+        # On GitHub the bot-opened update and promotion branches never get pull_request
+        # runs without approval, so the controller dispatches this same `test` job.
+        write('pr-checks.yml', {'name': 'PR automation checks',
+            'on': {'pull_request': {}, **({'workflow_dispatch': {}} if github else {})},
             'permissions': {'contents': 'read'}, 'jobs': {'test': pr_test}})
     monitor = job(None if github else 'nix-light')
     monitor['if'] = expr(trusted_ref)
