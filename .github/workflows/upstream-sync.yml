@@ -158,10 +158,10 @@ jobs:
           regexes = ['''^\s*let mut key = 0x6c62272e07bb014262b821756295c58du128;$''']
 
           [[allowlists]]
-          description = "Kuna provenance snapshots map source paths to SHA-256 digests"
-          targetRules = ["generic-api-key"]
+          description = "Kuna provenance snapshots (plain or gzipped) map source paths to SHA-256 digests"
+          targetRules = ["generic-api-key", "sentry-access-token"]
           condition = "AND"
-          paths = ['''^docs/features/[^/]+/(?:.+/)?[^/]*source-before[^/]*\.json$''']
+          paths = ['''^docs/features/[^/]+/(?:.+/)?[^/]*source-before[^/]*\.json(?:\.gz)?$''']
           regexTarget = "line"
           regexes = ['''^\s*"[^"]+": "[0-9a-f]{64}",?$''']
 
@@ -185,11 +185,15 @@ jobs:
           ATTIC_PUBLIC_KEY: ${{ inputs.attic-public-key }}
           ATTIC_HTTP2: ${{ inputs.cache-http2 }}
         run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt
+      # Only the cache job reads this export; without it, an over-limit closure
+      # would fail a build that publishes nothing.
       - name: Export runtime closures as data
+        if: inputs.cache
         env:
           ATTIC_MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
         run: python3 controller/ci/transfer-attic.py export --directory attic-transfer
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - if: inputs.cache
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fork-cache-${{ matrix.system }}-${{ needs.prepare.outputs.candidate }}
           path: attic-transfer/
@@ -263,6 +267,7 @@ jobs:
       contents: read
       actions: write
       checks: read
+      statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

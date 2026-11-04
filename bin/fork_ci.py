@@ -377,13 +377,19 @@ def github_call(method, endpoint, payload=None):
 def gate(args, sleep=time.sleep, timeout=1800):
     """Run the repository's required check on the candidate branch before promotion.
 
-    A ruleset that requires a status check accepts a fast-forward push whose
-    commit already passed that check on another branch, but the Actions token
-    cannot bypass it. pull_request runs never start for a branch only this job
-    pushed, so dispatch the PR check workflow on the immutable candidate branch
-    and wait for its check run on the exact commit. The workflow is repository
-    code from the fork's own reviewed default branch history; this job executes
-    nothing from the candidate.
+    The Actions token cannot bypass a ruleset's required status check, and a
+    personal repository cannot list GitHub Actions as a bypass actor.
+    pull_request runs never start for a branch only this job pushed, so
+    dispatch the PR check workflow on the immutable candidate branch and wait
+    for its check run on the exact commit. The workflow is repository code from
+    the fork's own reviewed default branch history; this job executes nothing
+    from the candidate.
+
+    GitHub does not count that workflow_dispatch check run toward the default
+    branch's ruleset (the push is refused with 'Required status check "test"
+    is expected'), so once it has passed, record the same result as a commit
+    status on the exact candidate. The status is written by GitHub Actions, the
+    integration the ruleset names, and only after the real check succeeded.
     """
     if not REPO.fullmatch(args.repository) or not SHA.fullmatch(args.candidate):
         raise Blocked('Invalid repository or candidate')
@@ -406,7 +412,14 @@ def gate(args, sleep=time.sleep, timeout=1800):
         runs = github_call('GET', base + '/commits/' + args.candidate + '/check-runs?check_name=' + urllib.parse.quote(args.check) + '&per_page=100')
         runs = [r for r in (runs or {}).get('check_runs', [])
                 if r.get('head_sha') == args.candidate and (r.get('app') or {}).get('slug') == 'github-actions']
-        if any(r.get('status') == 'completed' and r.get('conclusion') == 'success' for r in runs):
+        passed = [r for r in runs if r.get('status') == 'completed' and r.get('conclusion') == 'success']
+        if passed:
+            status = {'state': 'success', 'context': args.check,
+                      'description': 'Passed on sync/upstream/' + args.candidate[:12]}
+            if isinstance(passed[0].get('html_url'), str) and passed[0]['html_url'].startswith('https://github.com/'):
+                status['target_url'] = passed[0]['html_url']
+            if github_call('POST', base + '/statuses/' + args.candidate, status) is None:
+                raise Blocked('Could not record the passing ' + args.check + ' result on the candidate')
             emit({'gated': 'passed'})
             return
         if runs and all(r.get('status') == 'completed' for r in runs):

@@ -22,6 +22,7 @@ jobs:
       contents: write
       actions: write
       checks: read
+      statuses: write
     uses: REPOSITORY/.github/workflows/upstream-sync.yml@REVISION
     with:
       tool-repository: REPOSITORY
