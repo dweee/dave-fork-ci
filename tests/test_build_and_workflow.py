@@ -204,10 +204,36 @@ class BuildAndWorkflowTests(unittest.TestCase):
         self.assertFalse(allowed('        let mut key = "unrelated-fixture-value";'))
         self.assertFalse(allowed('let mut key = 0x6c62272e07bb014262b821756295c58du128; api_key = "unrelated";'))
 
+    def test_scanner_provenance_exception_covers_only_digest_lines_in_snapshots(self):
+        import re
+        import textwrap
+        import tomllib
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
+        config = source.split("<< 'EOF'\n", 1)[1].split('          EOF', 1)[0]
+        allowlist = tomllib.loads(textwrap.dedent(config))['allowlists'][2]
+        self.assertEqual((allowlist['regexTarget'], allowlist['condition']), ('line', 'AND'))
+        self.assertEqual(allowlist['targetRules'], ['generic-api-key', 'sentry-access-token'])
+        path = lambda name: any(re.search(pattern, name) for pattern in allowlist['paths'])
+        self.assertTrue(path('docs/features/rustptradd/parent-source-before-timing.json'))
+        self.assertTrue(path('docs/features/rustarrayzero/failed-default-on/parent-source-before-timing.json.gz'))
+        self.assertFalse(path('docs/features/rustptradd/notes.json.gz'))
+        self.assertFalse(path('src/parent-source-before-timing.json'))
+        line = lambda text: any(re.search(pattern, text) for pattern in allowlist['regexes'])
+        self.assertTrue(line('    "decompiler/Makefile": "' + 'ab' * 32 + '",'))
+        self.assertFalse(line('    "token": "sntrys_' + 'ab' * 32 + '",'))
+
+    def test_closure_export_runs_only_for_the_cache_job(self):
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
+        build_job = source.split('\n  build:', 1)[1].split('\n  cache:', 1)[0]
+        export = build_job.split('- name: Export runtime closures as data', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('if: inputs.cache', export)
+        upload = build_job.split('actions/upload-artifact@', 1)[0].rsplit('\n      - ', 1)[1]
+        self.assertIn('if: inputs.cache', upload)
+
     def test_all_external_actions_are_pinned(self):
         import re
         source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
-        for reference in re.findall(r'uses: (\S+)', source):
+        for reference in re.findall(r'^\s*(?:- )?uses: (\S+)', source, re.M):
             if not reference.startswith('./'):
                 self.assertRegex(reference, r'@[0-9a-f]{40}$')
 

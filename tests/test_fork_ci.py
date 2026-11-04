@@ -73,7 +73,7 @@ class MergeTests(unittest.TestCase):
 
     def test_gate_dispatches_the_check_on_the_candidate_branch_and_waits_for_success(self):
         calls = []
-        replies = iter([{}, {}, self.run_for('queued', None), self.run_for('completed')])
+        replies = iter([{}, {}, self.run_for('queued', None), self.run_for('completed'), {}])
         def call(method, endpoint, payload=None):
             calls.append((method, endpoint, payload))
             return next(replies)
@@ -81,7 +81,18 @@ class MergeTests(unittest.TestCase):
             ci.gate(self.gate_args(), sleep=lambda n: None)
         self.assertEqual(calls[1], ('POST', 'repos/owner/tool/actions/workflows/pr-checks.yml/dispatches',
                                     {'ref': 'sync/upstream/' + 'c' * 40}))
+        # The ruleset ignores the dispatched check run, so its result is recorded
+        # as a commit status on the exact candidate before promotion.
+        self.assertEqual(calls[-1][:2], ('POST', 'repos/owner/tool/statuses/' + 'c' * 40))
+        self.assertEqual((calls[-1][2]['state'], calls[-1][2]['context']), ('success', 'test'))
         emit.assert_called_with({'gated': 'passed'})
+
+    def test_gate_blocks_when_the_status_cannot_be_recorded(self):
+        replies = iter([{}, {}, self.run_for('completed'), None])
+        with patch.object(ci, 'github_call', lambda *a, **k: next(replies)), patch.object(ci, 'emit') as emit:
+            with self.assertRaises(ci.Blocked):
+                ci.gate(self.gate_args(), sleep=lambda n: None)
+        emit.assert_not_called()
 
     def test_gate_rejects_failed_foreign_and_missing_checks(self):
         for runs in [self.run_for('completed', 'failure'), self.run_for('completed', 'success', app='someone-else')]:
