@@ -52,7 +52,9 @@ class PublisherRoots(unittest.TestCase):
             root=Path(tmp);folder=root/'.github/workflows';folder.mkdir(parents=True)
             workflow=folder/'native.yml';workflow.write_text('name: Native\n# Preserve native layout\njobs:\n  publish:\n    steps:\n      - run: |\n          client=$(nix build nixpkgs#attic-client --no-link --print-out-paths)\n')
             policy=root/'policy.json';policy.write_text('{"targets":{}}')
-            mod.install(SimpleNamespace(directory=root,forge='github',repository='fixture/tool',branch='main',policy=policy))
+            yaml=SimpleNamespace(SafeDumper=SimpleNamespace(add_representer=lambda *a:None), safe_dump=lambda value,**kw:json.dumps(value))
+            with patch.dict('sys.modules',{'yaml':yaml}):
+                mod.install(SimpleNamespace(directory=root,forge='github',repository='fixture/tool',branch='main',policy=policy))
             text=workflow.read_text();self.assertIn('# Preserve native layout',text)
             self.assertIn('--out-link "${RUNNER_TEMP:-/tmp}/attic-client"',text)
             self.assertNotIn('--no-link',text)
