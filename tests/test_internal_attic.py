@@ -39,12 +39,12 @@ class InternalAtticUrl(unittest.TestCase):
         table = {name: (job['runs-on'], job.get('env', {}).get('ATTIC_SERVER')) for name, job in jobs.items()}
         self.assertEqual(table, {
             'test': ('nix-light', None),
-            'build_x86_64_linux': ('nix', INTERNAL),
+            'build_x86_64_linux': ('nix', None),
             'build_aarch64_linux': ('braco', None),
             'build_aarch64_darwin': ('darwin-aarch64', None),
-            'retain_x86_64_linux': ('nix', INTERNAL),
+            'retain_x86_64_linux': ('nix', None),
             'retain_aarch64_linux': ('braco', None),
-            'retain_aarch64_darwin': ('nix', INTERNAL),
+            'retain_aarch64_darwin': ('nix', None),
             'promote': ('nix', None),
         })
 
@@ -127,6 +127,28 @@ class InternalAtticUrl(unittest.TestCase):
         self.assertNotIn('uses', job['steps'][0])
         with tempfile.TemporaryDirectory() as directory:
             self.assertNotIn('retry-unacquired-runners.yml', self.install(directory, 'forgejo'))
+
+    def test_niks3_publisher_is_confined_to_trusted_jobs(self):
+        for forge in ['github', 'forgejo']:
+            with tempfile.TemporaryDirectory() as directory:
+                workflows = self.install(directory, forge)
+            release = workflows['release-channels.yml']['jobs']
+            for name, job in release.items():
+                steps = json.dumps(job.get('steps', []))
+                if name.startswith('build_'):
+                    self.assertIn("github.event_name != 'pull_request'", job['if'])
+                    self.assertIn('install-niks3.sh', steps)
+                    if forge == 'github':
+                        self.assertEqual(job['permissions']['id-token'], 'write')
+                        self.assertNotIn('FLAKEY_NIKS3_', steps)
+                        self.assertIn('configure-attic-read.py', steps)
+                    else:
+                        self.assertIn('FLAKEY_NIKS3_READ_NETRC', steps)
+                        self.assertIn('FLAKEY_NIKS3_WRITE_TOKEN', steps)
+                        self.assertNotIn('configure-attic-read.py', steps)
+                else:
+                    self.assertNotIn('id-token', job.get('permissions', {}))
+            self.assertNotIn('FLAKEY_NIKS3_', json.dumps(workflows['pr-checks.yml']))
 
     def test_installed_helpers_match_the_recorded_hashes(self):
         recorded = json.loads((ROOT / 'ci/channel-tool-hashes.json').read_text())
