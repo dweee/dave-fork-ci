@@ -138,7 +138,7 @@ jobs:
           BASE: ${{ needs.prepare.outputs.base }}
           CANDIDATE: ${{ needs.prepare.outputs.candidate }}
         run: |
-          scanner=$(nix build --no-link --print-out-paths --max-jobs 0 --builders '' \
+          scanner=$(nix build --out-link "$RUNNER_TEMP/gitleaks" --print-out-paths --max-jobs 0 --builders '' \
             --option accept-flake-config false --option substituters https://cache.nixos.org \
             github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0#gitleaks)
           cat > "$RUNNER_TEMP/scanner.toml" << 'EOF'
@@ -235,7 +235,7 @@ jobs:
           nix store info --store daemon --json
       - name: Install trusted Attic before importing untrusted closures
         run: |
-          client=$(nix build --no-link --print-out-paths --max-jobs 0 --builders '' \
+          client=$(nix build --out-link "$RUNNER_TEMP/attic-client" --print-out-paths --max-jobs 0 --builders '' \
             --option accept-flake-config false --option substituters https://cache.nixos.org \
             github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0#attic-client)
           echo "ATTIC_BIN=$client/bin/attic" >> "$GITHUB_ENV"

@@ -381,6 +381,13 @@ def install(args):
           'permissions': {'contents': 'write', 'issues': 'write', 'pull-requests': 'write', **({'actions': 'write'} if github else {})},
           'concurrency': {'group': 'scheduled-input-updates', 'cancel-in-progress': False}, 'jobs': jobs})
     if github:
+        # Publisher binaries are used across steps and must survive runner GC.
+        # Only touch their nix-build command, preserving native workflow layout.
+        for path in workflow_dir.glob('*.y*ml'):
+            text = path.read_text()
+            text = re.sub(r'(client=\$\(nix build[^\n]*?)--no-link',
+                          r'\1--out-link "${RUNNER_TEMP:-/tmp}/attic-client"', text)
+            path.write_text(text)
         install_unacquired_retry(root, workflow_dir, write)
     if not github and not source_only:
         print('Next: grant the restricted updater account write access to ' + args.repository +
