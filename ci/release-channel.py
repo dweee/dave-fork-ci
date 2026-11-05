@@ -45,10 +45,10 @@ def attic_server(environ=None):
 
 
 try:
-    CACHE = attic_server() + '/flakey'
+    CACHE = ('https://niks3.monke.fail' if json.loads((ROOT/'ci/channels.json').read_text()).get('forge') == 'forgejo' else attic_server() + '/flakey')
 except ValueError as error:
     sys.exit('Release channel gate failed during startup: ' + str(error) + '.')
-KEY = 'flakey:mDx4DiNpH5w1Pl8OAKFFWq1ZsypA9lbaFKNiRWhqYE8='
+KEY = ('niks3.monke.fail-1:q13GqiZgAxx7SyoLZInXoJjviZMOdNpfG03xs0VUD2M=' if CACHE == 'https://niks3.monke.fail' else 'flakey:mDx4DiNpH5w1Pl8OAKFFWq1ZsypA9lbaFKNiRWhqYE8=')
 UPSTREAM = 'https://cache.nixos.org'
 UPSTREAM_KEY = 'cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY='
 STORE = re.compile(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/\s]+')
@@ -526,7 +526,7 @@ def build(system):
     sha = source()
     # Writer/forge tokens never enter Nix evaluation or package build processes.
     env = {k: v for k, v in os.environ.items()
-           if k not in {'ATTIC_TOKEN', 'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN'}}
+           if k not in {'ATTIC_TOKEN', 'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'}}
     phase('check-native-platform')
     if run('nix', 'eval', '--impure', '--raw', '--expr', 'builtins.currentSystem', env=env) != system:
         raise ValueError('Native builder required')
@@ -545,12 +545,14 @@ def build(system):
     expected = {}
     with tempfile.TemporaryDirectory(prefix='channel-outputs-') as directory:
         phase('prepare-cache-publisher')
-        client = run('nix', 'build', '--inputs-from', flake, 'nixpkgs#attic-client', *FLAGS,
-                     '--no-link', '--print-out-paths', env=env)
-        if not STORE.fullmatch(client):
-            raise ValueError('Invalid publisher')
-        publish_env = dict(os.environ, ATTIC_BIN=client + '/bin/attic',
-                           ATTIC_ENDPOINT='https://attic.monke.fail', ATTIC_CACHE='flakey')
+        publish_env = dict(os.environ)
+        if rules['forge'] == 'github':
+            client = run('nix', 'build', '--inputs-from', flake, 'nixpkgs#attic-client', *FLAGS,
+                         '--no-link', '--print-out-paths', env=env)
+            if not STORE.fullmatch(client):
+                raise ValueError('Invalid publisher')
+            publish_env.update(ATTIC_BIN=client + '/bin/attic',
+                               ATTIC_ENDPOINT='https://attic.monke.fail', ATTIC_CACHE='flakey')
         outputs = Path(directory) / 'outputs.txt'
         for index, target in enumerate(targets, 1):
             print(f'Processing inventory target {index}/{len(targets)}', flush=True)
@@ -584,7 +586,9 @@ def build(system):
             # inventory, checks and independent cache verification below.
             outputs.write_text('\n'.join(paths) + '\n')
             phase('upload-target-closure')
-            run(sys.executable, str(ROOT / 'ci/push-attic.py'), '--outputs', str(outputs), env=publish_env)
+            if rules['forge'] == 'github':
+                run(sys.executable, str(ROOT / 'ci/push-attic.py'), '--outputs', str(outputs), env=publish_env)
+            run(sys.executable, str(ROOT / 'ci/push-niks3.py'), '--outputs', str(outputs), env=publish_env)
             roots.extend(paths)
             print(f'Built and cached inventory target {index}/{len(targets)}', flush=True)
         # All native flake checks are required, even when the package job would
