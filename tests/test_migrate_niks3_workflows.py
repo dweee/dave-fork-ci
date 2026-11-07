@@ -152,6 +152,39 @@ class MigrationSemantics(unittest.TestCase):
         self.assertLess(runs.index('bash ci/install-niks3.sh'), runs.index('python3 ci/transfer-attic.py import --directory attic-transfer'))
         self.assertEqual(next(s['timeout-minutes'] for s in steps if 'ci/push-niks3.py' in s.get('run', '')), 180)
 
+    def test_isolated_publisher_reads_before_bootstrap_and_always_cleans_up(self):
+        after, _ = migration.migrate_document(native_workflow())
+        steps = after['jobs']['publish']['steps']
+        runs = [step.get('run', '') for step in steps]
+        self.assertLess(runs.index('python3 ci/configure-niks3.py --oidc'), runs.index('bash ci/install-niks3.sh'))
+        self.assertLess(runs.index('python3 ci/push-niks3.py --outputs attic-transfer/outputs.txt'), runs.index('python3 ci/configure-niks3.py --cleanup'))
+        self.assertEqual(steps[-1]['if'], '${{ always() }}')
+        self.assertEqual(migration.migrate_document(after)[0], after)
+
+    def test_publisher_step_guard_also_guards_bootstrap_reader(self):
+        before = native_workflow(dual=False)
+        job = before['jobs']['publish']
+        guard = job.pop('if')
+        next(s for s in job['steps'] if 'push-attic.py' in s.get('run', ''))['if'] = guard
+        after, _ = migration.migrate_document(before)
+        steps = after['jobs']['publish']['steps']
+        reader = next(s for s in steps if s.get('run') == 'python3 ci/configure-niks3.py --oidc')
+        publisher = next(s for s in steps if 'ci/push-niks3.py' in s.get('run', ''))
+        self.assertEqual(reader['if'], publisher['if'])
+        self.assertEqual(migration.migrate_document(after)[0], after)
+
+    def test_late_or_already_removed_publisher_reader_requires_review(self):
+        for cleaned in (False, True):
+            before = native_workflow()
+            steps = before['jobs']['publish']['steps']
+            reader = {'run': 'python3 ci/configure-niks3.py --oidc'}
+            if cleaned:
+                steps[:0] = [reader, {'run': 'python3 ci/configure-niks3.py --cleanup'}]
+            else:
+                steps.append(reader)
+            with self.subTest(cleaned=cleaned), self.assertRaises(migration.MigrationError):
+                migration.migrate_document(before)
+
     def test_adds_missing_reader_cleanup_before_export(self):
         after, _ = migration.migrate_document(native_workflow(cleanup=False))
         steps = after['jobs']['build']['steps']
