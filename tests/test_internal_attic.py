@@ -141,11 +141,14 @@ class InternalAtticUrl(unittest.TestCase):
                     if forge == 'github':
                         self.assertEqual(job['permissions']['id-token'], 'write')
                         self.assertNotIn('FLAKEY_NIKS3_', steps)
-                        self.assertIn('configure-attic-read.py', steps)
+                        self.assertIn('configure-niks3.py --oidc', steps)
                     else:
                         self.assertIn('FLAKEY_NIKS3_READ_NETRC', steps)
                         self.assertIn('FLAKEY_NIKS3_WRITE_TOKEN', steps)
                         self.assertNotIn('configure-attic-read.py', steps)
+                elif name.startswith('retain_') and forge == 'github':
+                    self.assertEqual(job['permissions']['id-token'], 'write')
+                    self.assertIn('configure-niks3.py --oidc', steps)
                 else:
                     self.assertNotIn('id-token', job.get('permissions', {}))
             self.assertNotIn('FLAKEY_NIKS3_', json.dumps(workflows['pr-checks.yml']))

@@ -14,6 +14,11 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Install the workflow parser in an isolated test environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/controller-tests"
+          "$RUNNER_TEMP/controller-tests/bin/python" -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
+          echo "$RUNNER_TEMP/controller-tests/bin" >> "$GITHUB_PATH"
       - name: Controller, promotion and transfer regression tests
         env:
           PYTHONDONTWRITEBYTECODE: '1'

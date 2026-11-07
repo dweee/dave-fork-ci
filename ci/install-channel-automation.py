@@ -41,7 +41,7 @@ TAILNET_ATTIC = 'http://icicle.eel-ling.ts.net:8080'
 CACHE_SERVERS = {'nix': INTERNAL_ATTIC}
 HELPERS = ['release-channel.py', 'test-release-channel.py', 'update-inputs.py',
            'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-attic-read.py',
-           'configure-niks3.py', 'push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh']
+           'configure-niks3.py', 'push-niks3.py', 'test-push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh']
 
 
 # Bounded Nix downloads: fail fast on a dead connection and retry transient DNS,
@@ -249,14 +249,14 @@ def install(args):
         if config.get('excludedSystems'):
             checks = job(None if github else 'nix-light')
             checks['steps'] = checkout()+bootstrap(runner=checks['runs-on'])+[{'name': 'Automation regression tests',
-                'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')}]
+                'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-push-niks3.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')}]
             write('automation-checks.yml', {'name': 'Automation checks', 'on': {'push': {'branches':[args.branch]},
                 'pull_request':{}, 'workflow_dispatch':{}}, 'permissions':{'contents':'read'}, 'jobs':{'test':checks}})
     if config.get('targets'):
         test = job(None if github else 'nix-light')
         test['outputs'] = {'revision': expr('steps.selection.outputs.revision')}
         test['steps'] = checkout()+bootstrap(runner=test['runs-on'])+[
-            {'name': 'Regression tests and complete inventory policy', 'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')},
+            {'name': 'Regression tests and complete inventory policy', 'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-push-niks3.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')},
             {'name': 'Select immutable revision', 'id': 'selection',
              'env': {'REVISION': expr('inputs.revision || github.sha')},
              'run': python('-c \'import os,re; s=os.environ["REVISION"]; assert re.fullmatch("[a-f0-9]{40}",s); '
@@ -287,6 +287,14 @@ def install(args):
                  'run': python('ci/configure-attic-read.py --cleanup')}]
             if github:
                 native['permissions'] = {'contents': 'read', 'id-token': 'write'}
+                for step in native['steps']:
+                    if 'configure-attic-read.py' in step.get('run', ''):
+                        step['run'] = step['run'].replace('configure-attic-read.py', 'configure-niks3.py')
+                        if '--cleanup' not in step['run']:
+                            step['run'] += ' --oidc'
+                        step.pop('env', None)
+                    elif 'release-channel.py build' in step.get('run', ''):
+                        step.pop('env', None)
             else:
                 for step in native['steps']:
                     if 'configure-attic-read.py' in step.get('run', ''):
@@ -297,6 +305,15 @@ def install(args):
                     elif 'release-channel.py build' in step.get('run', ''):
                         step.pop('env', None)
             native['steps'].insert(-2, {'name': 'Install pinned Niks3 publisher', 'run': 'bash ci/install-niks3.sh'})
+            if not github and system.endswith('-darwin'):
+                # The host owns scheduling, power and capacity policy. Recheck
+                # before tool bootstraps; the release helper also checks before
+                # every package/check build in an already accepted job.
+                for step in native['steps']:
+                    if step.get('run', '').startswith('nix shell '):
+                        step['run'] = '"$NATIVE_BUILD_ADMISSION_COMMAND"\n' + step['run']
+                native['steps'][0]['run'] = ('test -n "${NATIVE_BUILD_ADMISSION_COMMAND:-}"\n'
+                    '"$NATIVE_BUILD_ADMISSION_COMMAND"\n' + native['steps'][0]['run'])
             jobs[key] = native
             # Retention disables builders and only evaluates paths/reads NARs.
             # aarch64 Linux retention runs on the native braco runner (one job
@@ -312,6 +329,14 @@ def install(args):
                  'run': python('ci/release-channel.py retain --system '+system)},
                 {'name': 'Remove private reader', 'if': expr('always()'),
                  'run': python('ci/configure-attic-read.py --cleanup')}]
+            if github:
+                retention['permissions'] = {'contents': 'read', 'id-token': 'write'}
+                for step in retention['steps']:
+                    if 'configure-attic-read.py' in step.get('run', ''):
+                        step['run'] = step['run'].replace('configure-attic-read.py', 'configure-niks3.py')
+                        if '--cleanup' not in step['run']:
+                            step['run'] += ' --oidc'
+                        step.pop('env', None)
             if not github:
                 for step in retention['steps']:
                     if 'configure-attic-read.py' in step.get('run', ''):
@@ -406,16 +431,19 @@ it repeats builds/checks/cache verification. Flakes continue to lock exact commi
 Failed, skipped or missing platforms never advance a channel. Promotion uses
 non-forced atomic pushes; release tags are immutable. No host activation occurs.
 `excludedSystems` records intentional exclusions from that guarantee. Private
-repositories exclude Darwin; their Darwin outputs remain available for manual
-use without claiming a successful Darwin build/cache gate. Darwin-only private
-tools have monitoring/input updates but no automatic tested/stable channel.
+Darwin outputs use the on-prem native Forgejo runner and its immutable host
+admission check before new package/check builds. An explicitly configured ARM
+Mac may provide Intel Darwin compatibility only with Nix extra-platforms and
+working Rosetta; other platform mismatches are rejected. Missing runner capacity
+or an incomplete platform never counts as successful release/cache coverage.
 
 The daily full run also verifies the advertised tested/stable revisions and the
 three newest tags per channel against their original build proofs, without
-source builds. NAR reads refresh Attic's last-access retention window. Historical
-helper code is never executed. No release/cache objects are deleted by this
-automation. Older tags remain immutable source selections, but only this bounded
-recovery set is actively kept warm; cache uptime is still monitored separately.
+source builds. These reads prove availability and integrity; they do not replace
+the cache server's retention policy. Historical helper code is never executed.
+No release/cache objects are deleted by this automation. Older tags remain
+immutable source selections, but only this bounded recovery set is actively
+rechecked; cache uptime is still monitored separately.
 
 Every six hours, the updater resolves `tracking-inputs.json`, uses Nix to write
 the lock, pins Git sources exactly in flake.nix, evaluates, and opens a review PR.
@@ -431,10 +459,12 @@ Required repository configuration:
 - Forgejo requires repository-scoped `FLAKEY_NIKS3_READ_NETRC` and
   `FLAKEY_NIKS3_WRITE_TOKEN`. Niks3 is its substitute and verified release cache;
   existing Attic secrets and historical objects remain.
-- GitHub requires no Niks3 static secrets: trusted publishers request write-only
-  OIDC with audience `https://niks3.monke.fail`. Both cache uploads gate releases.
-- GitHub: supply a repository-scoped `ATTIC_TOKEN` (or `FLAKEY_ATTIC_TOKEN`) with pull/push
-  access to the existing `flakey` cache. No private Forgejo inputs go to GitHub.
+- GitHub requires no Niks3 static secrets: trusted publishers request a write grant through
+  OIDC with audience `https://niks3.monke.fail`. Trusted readers use the separate
+  read-only audience `https://niks3.monke.fail/read` and `/oidc` cache object route,
+  refreshing the job-local netrc until cleanup. PR events receive no private
+  reader. Niks3 upload and signed remote verification gate releases. No private
+  Forgejo source credentials or inputs go to GitHub.
 - `inputCheckWorkflows` lists reviewed GitHub native workflows with workflow_dispatch.
   The updater explicitly dispatches them on the immutable update branch, including
   when using GITHUB_TOKEN. Each workflow must keep cache publication and secrets

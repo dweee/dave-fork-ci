@@ -72,7 +72,9 @@ def main():
     policy = validate_policy(json.loads((args.source / '.fork-ci.json').read_text()))
     row = next(r for r in policy['matrix'] if r['system'] == args.system)
     env = {k: v for k, v in os.environ.items() if k not in
-           ['GH_TOKEN', 'GITHUB_TOKEN', 'ATTIC_TOKEN', 'SSH_AUTH_SOCK']}
+           ['GH_TOKEN', 'GITHUB_TOKEN', 'ATTIC_TOKEN', 'SSH_AUTH_SOCK',
+            'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL',
+            'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE']}
     if os.environ.get('ATTIC_TOKEN') or os.environ.get('GH_TOKEN'):
         raise Blocked('Build jobs must not receive publication credentials')
     substituter = public_cache(env)

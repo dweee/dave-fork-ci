@@ -172,8 +172,10 @@ class BuildAndWorkflowTests(unittest.TestCase):
         self.assertNotIn('contents: write', build_job)
         self.assertNotIn('GH_TOKEN:', build_job)
         cache_job = source.split('\n  cache:', 1)[1].split('\n  promote:', 1)[0]
-        self.assertLess(cache_job.index('Install trusted Attic'), cache_job.index('Import data'))
-        self.assertEqual(cache_job.count('secrets.ATTIC_TOKEN'), 1)
+        self.assertLess(cache_job.index('Install pinned Niks3'), cache_job.index('Import data'))
+        self.assertNotIn('secrets.ATTIC_TOKEN', cache_job)
+        self.assertNotIn('push-attic.py', cache_job)
+        self.assertIn('push-niks3.py', cache_job)
         self.assertIn('--outputs attic-transfer/outputs.txt', cache_job)
         promote = source.split('\n  promote:', 1)[1]
         self.assertIn("needs.build.result == 'success'", promote)
