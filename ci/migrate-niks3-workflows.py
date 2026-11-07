@@ -336,13 +336,35 @@ def migrate_document(document, controller_revision=None):
                 'run': 'python3 ci/configure-niks3.py --oidc',
             })
             has_reader = True
-        if has_reader:
-            if not any(command(step.get('run', ''), 'configure-niks3.py') == ['--cleanup'] for step in rewritten):
-                index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-attic.py export' in step.get('run', '')), len(rewritten))
-                rewritten.insert(index, {'name': 'Remove job-local Niks3 reader before exporting build data', 'if': '${{ always() }}', 'run': 'python3 ci/configure-niks3.py --cleanup'})
         if has_publisher and not any(step.get('run', '').strip() == 'bash ci/install-niks3.sh' for step in rewritten):
             index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-attic.py import' in step.get('run', '') or command(step.get('run', ''), 'push-niks3.py') is not None), len(rewritten))
             rewritten.insert(index, {'name': 'Install pinned Niks3 publisher before importing build data', 'run': 'bash ci/install-niks3.sh'})
+        if has_publisher:
+            install = next(i for i, step in enumerate(rewritten) if step.get('run', '').strip() == 'bash ci/install-niks3.sh')
+            if not has_reader:
+                # The isolated publisher also needs substitution for its trusted
+                # bootstrap client. Keep the publisher's step guard as well as
+                # the job guard; an unguarded job may also run on PR events.
+                gates = {step.get('if', '') for step in rewritten
+                         if command(step.get('run', ''), 'push-niks3.py') is not None}
+                if len(gates) != 1:
+                    raise MigrationError('Publisher reader requires one reviewed guard: ' + str(job_name))
+                reader = {'name': 'Read Niks3 before installing the pinned publisher',
+                          'run': 'python3 ci/configure-niks3.py --oidc'}
+                gate = gates.pop()
+                if gate:
+                    reader['if'] = gate
+                rewritten.insert(install, reader)
+                has_reader = True
+            else:
+                auth = [command(step.get('run', ''), 'configure-niks3.py') for step in rewritten[:install]
+                        if command(step.get('run', ''), 'configure-niks3.py') is not None]
+                if not auth or auth[-1] != ['--oidc']:
+                    raise MigrationError('Active publisher reader must precede client installation: ' + str(job_name))
+        if has_reader:
+            if not any(command(step.get('run', ''), 'configure-niks3.py') == ['--cleanup'] for step in rewritten):
+                index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-attic.py export' in step.get('run', '')), len(rewritten))
+                rewritten.insert(index, {'name': 'Remove job-local Niks3 reader before exporting build data' if native_build is not None else 'Remove job-local Niks3 reader', 'if': '${{ always() }}', 'run': 'python3 ci/configure-niks3.py --cleanup'})
         if has_reader or has_publisher:
             permissions(document, job)
         if 'steps' in job:

@@ -63,6 +63,8 @@ class PublisherRoots(unittest.TestCase):
         workflow=(ROOT/'.github/workflows/upstream-sync.yml').read_text()
         cache=workflow.split('\n  cache:',1)[1].split('\n  promote:',1)[0]
         self.assertLess(cache.index('install-niks3.sh'),cache.index('Import data'))
+        self.assertLess(cache.index('configure-niks3.py --oidc'),cache.index('install-niks3.sh'))
+        self.assertLess(cache.index('push-niks3.py'),cache.index('configure-niks3.py --cleanup'))
         self.assertNotIn('nixpkgs#attic-client',cache)
         self.assertNotIn('push-attic.py',cache)
     def test_installer_roots_native_publishers_without_reformatting(self):
