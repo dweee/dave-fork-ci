@@ -23,6 +23,8 @@ CREDENTIAL_KEYS = {
 }
 CACHE_FLAG = '(vars.NIKS3_PUSH_ENABLED || vars.ATTIC_PUSH_ENABLED)'
 CALLER = 'dweee/dave-fork-ci/.github/workflows/upstream-sync.yml@'
+INSTALL_NIKS3 = 'bash ci/install-niks3.sh --retain-bootstrap'
+BOOTSTRAP_OUTPUTS = ['--outputs', 'niks3-bootstrap-outputs.txt']
 
 
 class MigrationError(ValueError):
@@ -298,6 +300,8 @@ def migrate_document(document, controller_revision=None):
                 if not manifest_args(args) or not trusted_gate(job, step):
                     raise MigrationError('Unsupported or untrusted Niks3 publisher: ' + str(job_name))
                 has_publisher = True
+            elif 'ci/install-niks3.sh' in run and run.strip() not in {'bash ci/install-niks3.sh', INSTALL_NIKS3}:
+                raise MigrationError('Mixed or unsupported Niks3 client install: ' + str(job_name))
             elif run.strip() in {'rm -f "$RUNNER_TEMP/flakey-attic.netrc"', 'rm -f $RUNNER_TEMP/flakey-attic.netrc'}:
                 step['run'] = 'python3 ci/configure-niks3.py --cleanup'
             elif re.search(r'\battic\s+(?:login|use|push)\b|\$\{?ATTIC_(?:BIN|TOKEN)\b', run):
@@ -336,22 +340,36 @@ def migrate_document(document, controller_revision=None):
                 'run': 'python3 ci/configure-niks3.py --oidc',
             })
             has_reader = True
-        if has_publisher and not any(step.get('run', '').strip() == 'bash ci/install-niks3.sh' for step in rewritten):
+        installs = {'bash ci/install-niks3.sh', INSTALL_NIKS3}
+        if has_publisher and not any(step.get('run', '').strip() in installs for step in rewritten):
             index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-attic.py import' in step.get('run', '') or command(step.get('run', ''), 'push-niks3.py') is not None), len(rewritten))
-            rewritten.insert(index, {'name': 'Install pinned Niks3 publisher before importing build data', 'run': 'bash ci/install-niks3.sh'})
+            rewritten.insert(index, {'name': 'Install pinned Niks3 publisher before importing build data', 'run': INSTALL_NIKS3})
         if has_publisher:
-            install = next(i for i, step in enumerate(rewritten) if step.get('run', '').strip() == 'bash ci/install-niks3.sh')
+            install = next(i for i, step in enumerate(rewritten) if step.get('run', '').strip() in installs)
+            rewritten[install]['run'] = INSTALL_NIKS3
+            gates = {step.get('if', '') for step in rewritten
+                     if command(step.get('run', ''), 'push-niks3.py') is not None}
+            if len(gates) != 1:
+                raise MigrationError('Bootstrap publication requires one reviewed guard: ' + str(job_name))
+            gate = gates.pop()
+            bootstrap = [i for i, step in enumerate(rewritten)
+                         if command(step.get('run', ''), 'push-niks3.py') == BOOTSTRAP_OUTPUTS]
+            if not bootstrap:
+                step = {'name': 'Publish bootstrap client and completed build dependencies',
+                        'run': 'python3 ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt'}
+                if gate:
+                    step['if'] = gate
+                rewritten.insert(install + 1, step)
+            elif len(bootstrap) != 1 or bootstrap[0] <= install:
+                raise MigrationError('Bootstrap publication must follow trusted client installation: ' + str(job_name))
+            elif any('ci/transfer-attic.py import' in step.get('run', '') for step in rewritten[:bootstrap[0]]):
+                raise MigrationError('Bootstrap publication must precede build data import: ' + str(job_name))
             if not has_reader:
                 # The isolated publisher also needs substitution for its trusted
                 # bootstrap client. Keep the publisher's step guard as well as
                 # the job guard; an unguarded job may also run on PR events.
-                gates = {step.get('if', '') for step in rewritten
-                         if command(step.get('run', ''), 'push-niks3.py') is not None}
-                if len(gates) != 1:
-                    raise MigrationError('Publisher reader requires one reviewed guard: ' + str(job_name))
                 reader = {'name': 'Read Niks3 before installing the pinned publisher',
                           'run': 'python3 ci/configure-niks3.py --oidc'}
-                gate = gates.pop()
                 if gate:
                     reader['if'] = gate
                 rewritten.insert(install, reader)

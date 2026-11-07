@@ -153,6 +153,27 @@ class InternalAtticUrl(unittest.TestCase):
                     self.assertNotIn('id-token', job.get('permissions', {}))
             self.assertNotIn('FLAKEY_NIKS3_', json.dumps(workflows['pr-checks.yml']))
 
+    def test_bootstrap_publication_and_cleanup_never_start_private_darwin_builds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = self.install(directory, 'forgejo')['release-channels.yml']['jobs']
+        steps = jobs['build_aarch64_darwin']['steps']
+        install = next(s for s in steps if 'install-niks3.sh' in s.get('run', ''))
+        self.assertIn('nixpkgs#python3 -c bash ci/install-niks3.sh --retain-bootstrap', install['run'])
+        self.assertTrue(install['run'].startswith('"$NATIVE_BUILD_ADMISSION_COMMAND"\n'))
+        publish = next(s for s in steps if 'ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt' in s.get('run', ''))
+        cleanup = next(s for s in steps if 'configure-niks3.py --cleanup' in s.get('run', ''))
+        for step in (publish, cleanup):
+            self.assertIn('--option max-jobs 0 --option builders ""', step['run'])
+            self.assertIn('--option allow-import-from-derivation false', step['run'])
+            self.assertNotIn('NATIVE_BUILD_ADMISSION_COMMAND', step['run'])
+        self.assertEqual(cleanup['if'], '${{ always() }}')
+        self.assertLess(steps.index(install), steps.index(publish))
+        release = next(s for s in steps if 'ci/release-channel.py build' in s.get('run', ''))
+        self.assertLess(steps.index(publish), steps.index(release))
+        for name, job in jobs.items():
+            if name.startswith('retain_'):
+                self.assertNotIn('push-niks3.py', json.dumps(job))
+
     def test_installed_helpers_match_the_recorded_hashes(self):
         recorded = json.loads((ROOT / 'ci/channel-tool-hashes.json').read_text())
         self.assertEqual(recorded, {name: hashlib.sha256((ROOT / 'ci' / name).read_bytes()).hexdigest()

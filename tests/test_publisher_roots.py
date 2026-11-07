@@ -54,16 +54,48 @@ class PublisherRoots(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);binary=root/'nix';client=root/'store-client';(client/'bin').mkdir(parents=True)
             (client/'bin/niks3').write_text('#!/bin/sh\nexit 0\n');(client/'bin/niks3').chmod(0o700)
-            binary.write_text('#!/bin/sh\nset -eu\nroot=\nwhile [ "$#" -gt 0 ]; do case "$1" in --no-link) exit 42;; --out-link) shift; root=$1;; esac; shift; done\ntest -n "$root"\nln -s "$FIXTURE_CLIENT" "$root"\nprintf "%s\\n" "$FIXTURE_CLIENT"\n');binary.chmod(0o700)
-            env=os.environ|{'PATH':str(root)+':'+os.environ['PATH'],'RUNNER_TEMP':str(root),'FIXTURE_CLIENT':str(client),'GITHUB_ENV':str(root/'env')}
+            binary.write_text('#!/bin/sh\nset -eu\ntest -z "${NIKS3_AUTH_TOKEN_FILE+x}${NIKS3_WRITE_TOKEN+x}${GH_TOKEN+x}${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}"\ntest "$NIKS3_NETRC_FILE" = readonly-fixture\nroot=\nwhile [ "$#" -gt 0 ]; do case "$1" in --no-link) exit 42;; --out-link) shift; root=$1;; esac; shift; done\ntest -n "$root"\nln -s "$FIXTURE_CLIENT" "$root"\nprintf "%s\\n" "$FIXTURE_CLIENT"\n');binary.chmod(0o700)
+            env=os.environ|{'PATH':str(root)+':'+os.environ['PATH'],'RUNNER_TEMP':str(root),'FIXTURE_CLIENT':str(client),'GITHUB_ENV':str(root/'env'),
+                            'NIKS3_AUTH_TOKEN_FILE':'synthetic-writer-file','NIKS3_WRITE_TOKEN':'synthetic-writer',
+                            'GH_TOKEN':'synthetic-forge','ACTIONS_ID_TOKEN_REQUEST_TOKEN':'synthetic-request','NIKS3_NETRC_FILE':'readonly-fixture'}
             subprocess.run(['bash',str(ROOT/'ci/install-niks3.sh')],env=env,check=True)
             self.assertEqual((root/'niks3-client').resolve(),client)
+            self.assertIn('NIKS3_BIN='+str(client)+'/bin/niks3',(root/'env').read_text())
+
+    def test_bootstrap_retention_is_read_only_and_requires_an_explicit_flag(self):
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);client=root/'client';(client/'bin').mkdir(parents=True)
+            (client/'bin/niks3').write_text('fixture');(client/'bin/niks3').chmod(0o700)
+            python=root/'python3'
+            python.write_text('#!'+sys.executable+'\n'+'''import os, pathlib, sys
+assert pathlib.Path(sys.argv[1]).name == 'retain-build-outputs.py'
+for name in ('NIKS3_AUTH_TOKEN_FILE','NIKS3_WRITE_TOKEN','GH_TOKEN','GITHUB_TOKEN','CHANNEL_TOKEN','SOURCE_TOKEN','SSH_AUTH_SOCK','ACTIONS_ID_TOKEN_REQUEST_TOKEN','ACTIONS_ID_TOKEN_REQUEST_URL'):
+    assert name not in os.environ, name
+assert os.environ['NIKS3_NETRC_FILE']=='readonly-fixture'
+target='github:Mic92/niks3/2d5a6b14e0df5c8fecc27571b79c40563c98ec32#niks3'
+assert sys.argv[sys.argv.index('--target')+1]==target
+assert sys.argv[sys.argv.index('--')+1:][:2]==['nix','build']
+assert '--out-link' in sys.argv and target in sys.argv
+pathlib.Path(sys.argv[sys.argv.index('--manifest')+1]).write_text(os.environ['FIXTURE_CLIENT']+'\\n')
+print(os.environ['FIXTURE_CLIENT'])
+''');python.chmod(0o700)
+            env=os.environ|{'PATH':str(root)+':'+os.environ['PATH'],'RUNNER_TEMP':str(root),'FIXTURE_CLIENT':str(client),'GITHUB_ENV':str(root/'env'),
+                            'NIKS3_AUTH_TOKEN_FILE':'synthetic-writer-file','NIKS3_WRITE_TOKEN':'synthetic-writer','GH_TOKEN':'synthetic-forge',
+                            'ACTIONS_ID_TOKEN_REQUEST_TOKEN':'synthetic-request','NIKS3_NETRC_FILE':'readonly-fixture'}
+            script=str(ROOT/'ci/install-niks3.sh')
+            result=subprocess.run(['bash',script,'--unknown'],cwd=root,env=env,capture_output=True)
+            self.assertEqual(result.returncode,2);self.assertFalse((root/'niks3-bootstrap-outputs.txt').exists())
+            subprocess.run(['bash',script,'--retain-bootstrap'],cwd=root,env=env,check=True)
+            self.assertEqual((root/'niks3-bootstrap-outputs.txt').read_text(),str(client)+'\n')
             self.assertIn('NIKS3_BIN='+str(client)+'/bin/niks3',(root/'env').read_text())
     def test_shared_publisher_uses_rooted_niks3_before_import(self):
         workflow=(ROOT/'.github/workflows/upstream-sync.yml').read_text()
         cache=workflow.split('\n  cache:',1)[1].split('\n  promote:',1)[0]
         self.assertLess(cache.index('install-niks3.sh'),cache.index('Import data'))
         self.assertLess(cache.index('configure-niks3.py --oidc'),cache.index('install-niks3.sh'))
+        self.assertIn('install-niks3.sh --retain-bootstrap',cache)
+        self.assertLess(cache.index('push-niks3.py --outputs niks3-bootstrap-outputs.txt'),cache.index('Import data'))
         self.assertLess(cache.index('push-niks3.py'),cache.index('configure-niks3.py --cleanup'))
         self.assertNotIn('nixpkgs#attic-client',cache)
         self.assertNotIn('push-attic.py',cache)
