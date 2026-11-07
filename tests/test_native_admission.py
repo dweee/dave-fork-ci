@@ -13,6 +13,35 @@ spec.loader.exec_module(channel)
 
 
 class NativeAdmission(unittest.TestCase):
+    def test_matching_platform_needs_no_compatibility_override(self):
+        with patch.object(channel, 'run', return_value='aarch64-darwin') as run:
+            channel.native_platform_ready({'forge': 'github'}, 'aarch64-darwin', {})
+            self.assertEqual(run.call_count, 1)
+
+    def test_only_explicit_private_intel_darwin_compatibility_is_allowed(self):
+        for forge, actual, target, enabled in [
+                ('github', 'aarch64-darwin', 'x86_64-darwin', True),
+                ('forgejo', 'aarch64-darwin', 'x86_64-darwin', False),
+                ('forgejo', 'x86_64-linux', 'aarch64-linux', True)]:
+            with self.subTest(forge=forge, actual=actual, target=target), patch.object(channel, 'run', return_value=actual), patch.object(channel, 'native_build_ready') as admission:
+                with self.assertRaises(ValueError):
+                    channel.native_platform_ready({'forge': forge}, target, {'NATIVE_BUILD_COMPATIBLE_SYSTEMS': target} if enabled else {})
+                admission.assert_not_called()
+
+    def test_intel_compatibility_requires_nix_platform_rosetta_and_host_admission(self):
+        import json
+        env = {'NATIVE_BUILD_COMPATIBLE_SYSTEMS': 'x86_64-darwin'}
+        for platforms in [[], 'x86_64-darwin', ['x86_64-darwin']]:
+            with self.subTest(platforms=platforms), patch.object(channel, 'native_build_ready') as admission, patch.object(channel, 'run', side_effect=['aarch64-darwin', json.dumps({'extra-platforms': {'value': platforms}}), '']) as run:
+                if isinstance(platforms, list) and platforms:
+                    channel.native_platform_ready({'forge': 'forgejo'}, 'x86_64-darwin', env)
+                    self.assertEqual(run.call_args.args, ('/usr/bin/arch', '-x86_64', '/usr/bin/true'))
+                else:
+                    with self.assertRaises(ValueError):
+                        channel.native_platform_ready({'forge': 'forgejo'}, 'x86_64-darwin', env)
+                    self.assertEqual(run.call_count, 2)
+                admission.assert_called_once_with({'forge': 'forgejo'}, 'x86_64-darwin', env)
+
     def test_only_private_darwin_builds_require_the_host_checker(self):
         with patch.object(channel.subprocess, 'run') as run:
             channel.native_build_ready({'forge':'github'}, 'aarch64-darwin', {})
