@@ -305,6 +305,15 @@ def install(args):
                     elif 'release-channel.py build' in step.get('run', ''):
                         step.pop('env', None)
             native['steps'].insert(-2, {'name': 'Install pinned Niks3 publisher', 'run': 'bash ci/install-niks3.sh'})
+            if not github and system.endswith('-darwin'):
+                # The host owns scheduling, power and capacity policy. Recheck
+                # before tool bootstraps; the release helper also checks before
+                # every package/check build in an already accepted job.
+                for step in native['steps']:
+                    if step.get('run', '').startswith('nix shell '):
+                        step['run'] = '"$NATIVE_BUILD_ADMISSION_COMMAND"\n' + step['run']
+                native['steps'][0]['run'] = ('test -n "${NATIVE_BUILD_ADMISSION_COMMAND:-}"\n'
+                    '"$NATIVE_BUILD_ADMISSION_COMMAND"\n' + native['steps'][0]['run'])
             jobs[key] = native
             # Retention disables builders and only evaluates paths/reads NARs.
             # aarch64 Linux retention runs on the native braco runner (one job

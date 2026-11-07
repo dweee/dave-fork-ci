@@ -1,5 +1,5 @@
 {
-  "release-channel.py": "e04499d1db67038ffa98add4499bf4abd9471c76bcddea838ef973620d10a97b",
+  "release-channel.py": "69eeb41d2f469dd7303be191afecf0fd6220c9ead279351471e0b96c6ca04a50",
   "test-release-channel.py": "8ab554da6c823419e581ef175f71f85eb393d3146fd0162aedd365fbb0bff4ef",
   "update-inputs.py": "ce66ee5c77a8b731cee10390c4123b9e467cb376e2443343fdf724baaecfb66f",
   "update-monitor.py": "ff1867c18ef4f549a0d7f84eb828f6a3e44b1575d4d42113bca770ff06e09c74",
@@ -9,5 +9,5 @@
   "configure-niks3.py": "344f8465ab92c8c3276aeae631ff8902c074b050d15085b9296ad961c3af9a83",
   "push-niks3.py": "2afe76b4ad5b64566591416f34f84e4dcb30ed8815d6b0cf22463114b4d16798",
   "niks3-oidc-token.py": "6eb6bd8faa603dd399c8ae070708d5c0f305b74705a25ea034067e853ff9c989",
-  "install-niks3.sh": "33c78cd31bd8753709e3476d10db5fb88d902a010686bf98eb7eedbbdacdcba5"
+  "install-niks3.sh": "08f799108b9e5f6927230ae91d8a555f68ab2b8aeb6b1abdd75345f72fbbbf25"
 }

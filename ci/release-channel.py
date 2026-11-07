@@ -516,6 +516,17 @@ def source():
     return sha
 
 
+def native_build_ready(rules, system, env):
+    if rules.get('forge') != 'forgejo' or not system.endswith('-darwin'):
+        return
+    checker = env.get('NATIVE_BUILD_ADMISSION_COMMAND', '')
+    if not re.fullmatch(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/\s]+(?:/[^\s]+)?', checker) or not os.access(checker, os.X_OK):
+        raise ValueError('Missing trusted native Darwin build admission command')
+    result = subprocess.run([checker], env=env, capture_output=True, timeout=15)
+    if result.returncode:
+        raise ValueError('Native Darwin build readiness gate rejected new work')
+
+
 def build(system):
     rules = policy()
     if rules.get('kind') == 'fleet':
@@ -556,6 +567,7 @@ def build(system):
                 guard = module('build-cache-only.py')
                 graph = json.loads(run('nix', 'derivation', 'show', '--recursive', attr, *FLAGS, env=env))
                 guard.check(graph)
+            native_build_ready(rules, system, env)
             phase('build-required-output')
             paths = run('nix', 'build', attr + '^*', *FLAGS, '--fallback', '--no-link',
                         '--print-out-paths', env=env).splitlines()
@@ -584,6 +596,7 @@ def build(system):
         phase('build-native-checks')
         checks = native_check_names(flake, system, env)
         for name in checks:
+            native_build_ready(rules, system, env)
             if not re.fullmatch(r'[\w+-]+', name):
                 raise ValueError('Invalid check name')
             run('nix', 'build', flake + '#checks.' + system + '.' + name, *FLAGS, '--no-link', env=env)
