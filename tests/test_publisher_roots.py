@@ -13,23 +13,18 @@ spec=importlib.util.spec_from_file_location('release_roots',ROOT/'ci/release-cha
 channel=importlib.util.module_from_spec(spec);spec.loader.exec_module(channel)
 
 class PublisherRoots(unittest.TestCase):
-    def test_release_attic_client_is_rooted_for_the_release_lifetime(self):
-        class Installed(Exception):pass
+    def test_release_does_not_install_an_attic_client(self):
         calls=[]
         def run(*args,**kwargs):
+            calls.append(args)
             if args[:2]==('nix','eval'):
                 return 'aarch64-darwin' if '--impure' in args else json.dumps(['aarch64-darwin'])
-            calls.append(args)
-            self.assertIn('nixpkgs#attic-client',args)
-            self.assertNotIn('--no-link',args)
-            root=Path(args[args.index('--out-link')+1])
-            self.assertEqual(root.name,'attic-client')
-            self.assertTrue(root.parent.is_dir())
-            raise Installed
+            return ''
         rules={'forge':'github','targets':{'aarch64-darwin':[]}}
-        with patch.object(channel,'policy',return_value=rules),patch.object(channel,'source',return_value='a'*40),patch.object(channel,'run',side_effect=run):
-            with self.assertRaises(Installed):channel.build('aarch64-darwin')
-        self.assertEqual(len(calls),1)
+        with patch.object(channel,'policy',return_value=rules),patch.object(channel,'source',return_value='a'*40),patch.object(channel,'run',side_effect=run),patch.object(channel,'native_check_names',return_value=[]),patch.object(channel,'verify',return_value='a'*64):
+            with self.assertRaisesRegex(ValueError, 'Missing built output closure'):
+                channel.build('aarch64-darwin')
+        self.assertFalse(any('nixpkgs#attic-client' in args for args in calls))
     def test_niks3_installer_registers_a_job_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);binary=root/'nix';client=root/'store-client';(client/'bin').mkdir(parents=True)
@@ -39,11 +34,12 @@ class PublisherRoots(unittest.TestCase):
             subprocess.run(['bash',str(ROOT/'ci/install-niks3.sh')],env=env,check=True)
             self.assertEqual((root/'niks3-client').resolve(),client)
             self.assertIn('NIKS3_BIN='+str(client)+'/bin/niks3',(root/'env').read_text())
-    def test_shared_attic_publisher_has_a_job_root(self):
+    def test_shared_publisher_uses_rooted_niks3_before_import(self):
         workflow=(ROOT/'.github/workflows/upstream-sync.yml').read_text()
-        install=workflow.split('client=$(nix build',1)[1].split(')',1)[0]
-        self.assertIn('--out-link "$RUNNER_TEMP/attic-client"',install)
-        self.assertNotIn('--no-link',install)
+        cache=workflow.split('\n  cache:',1)[1].split('\n  promote:',1)[0]
+        self.assertLess(cache.index('install-niks3.sh'),cache.index('Import data'))
+        self.assertNotIn('nixpkgs#attic-client',cache)
+        self.assertNotIn('push-attic.py',cache)
     def test_installer_roots_native_publishers_without_reformatting(self):
         spec=importlib.util.spec_from_file_location('install_roots',ROOT/'ci/install-channel-automation.py')
         mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)

@@ -287,6 +287,14 @@ def install(args):
                  'run': python('ci/configure-attic-read.py --cleanup')}]
             if github:
                 native['permissions'] = {'contents': 'read', 'id-token': 'write'}
+                for step in native['steps']:
+                    if 'configure-attic-read.py' in step.get('run', ''):
+                        step['run'] = step['run'].replace('configure-attic-read.py', 'configure-niks3.py')
+                        if '--cleanup' not in step['run']:
+                            step['run'] += ' --oidc'
+                        step.pop('env', None)
+                    elif 'release-channel.py build' in step.get('run', ''):
+                        step.pop('env', None)
             else:
                 for step in native['steps']:
                     if 'configure-attic-read.py' in step.get('run', ''):
@@ -312,6 +320,14 @@ def install(args):
                  'run': python('ci/release-channel.py retain --system '+system)},
                 {'name': 'Remove private reader', 'if': expr('always()'),
                  'run': python('ci/configure-attic-read.py --cleanup')}]
+            if github:
+                retention['permissions'] = {'contents': 'read', 'id-token': 'write'}
+                for step in retention['steps']:
+                    if 'configure-attic-read.py' in step.get('run', ''):
+                        step['run'] = step['run'].replace('configure-attic-read.py', 'configure-niks3.py')
+                        if '--cleanup' not in step['run']:
+                            step['run'] += ' --oidc'
+                        step.pop('env', None)
             if not github:
                 for step in retention['steps']:
                     if 'configure-attic-read.py' in step.get('run', ''):
