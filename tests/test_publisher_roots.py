@@ -20,6 +20,11 @@ class PublisherRoots(unittest.TestCase):
         def run(*args, **kwargs):
             if args[:2] == ('nix', 'eval'):
                 return 'x86_64-linux' if '--impure' in args else json.dumps(['x86_64-linux'])
+            if args[:3] == ('nix', 'derivation', 'show'):
+                path = check if '#checks.' in args[4] else root
+                return json.dumps({'/nix/store/'+'c'*32+'-fixture.drv': {'outputs': {'out': {'path': path}}}})
+            if args[:4] == ('nix', 'path-info', '--json', '--all'):
+                return json.dumps({root: {}, check: {}})
             if args[:2] == ('nix', 'build'):
                 return check if '#checks.' in args[2] else root
             if 'push-niks3.py' in args[1]:
