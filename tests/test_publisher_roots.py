@@ -13,6 +13,26 @@ spec=importlib.util.spec_from_file_location('release_roots',ROOT/'ci/release-cha
 channel=importlib.util.module_from_spec(spec);spec.loader.exec_module(channel)
 
 class PublisherRoots(unittest.TestCase):
+    def test_completed_checks_are_cached_before_later_release_failure(self):
+        root = '/nix/store/'+'a'*32+'-package'
+        check = '/nix/store/'+'b'*32+'-check'
+        uploads = []
+        def run(*args, **kwargs):
+            if args[:2] == ('nix', 'eval'):
+                return 'x86_64-linux' if '--impure' in args else json.dumps(['x86_64-linux'])
+            if args[:2] == ('nix', 'build'):
+                return check if '#checks.' in args[2] else root
+            if 'push-niks3.py' in args[1]:
+                uploads.append(Path(args[-1]).read_text().splitlines())
+                return ''
+            raise AssertionError(args)
+        rules = {'forge': 'forgejo', 'targets': {'x86_64-linux': [
+            {'attribute': 'packages.x86_64-linux.default', 'visibility': 'private'}]}}
+        with patch.object(channel, 'policy', return_value=rules), patch.object(channel, 'source', return_value='a'*40), patch.object(channel, 'run', side_effect=run), patch.object(channel, 'info', return_value={root: {}}), patch.object(channel, 'native_check_names', return_value=['smoke']), patch.object(channel, 'verify', side_effect=ValueError('later verification failed')):
+            with self.assertRaisesRegex(ValueError, 'later verification failed'):
+                channel.build('x86_64-linux')
+        self.assertEqual(uploads, [[root], [check]])
+
     def test_release_does_not_install_an_attic_client(self):
         calls=[]
         def run(*args,**kwargs):

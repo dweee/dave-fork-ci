@@ -616,7 +616,15 @@ def build(system):
             native_build_ready(rules, system, env)
             if not re.fullmatch(r'[\w+-]+', name):
                 raise ValueError('Invalid check name')
-            run('nix', 'build', flake + '#checks.' + system + '.' + name, *FLAGS, '--no-link', env=env)
+            check_paths = run('nix', 'build', flake + '#checks.' + system + '.' + name + '^*',
+                              *FLAGS, '--no-link', '--print-out-paths', env=env).splitlines()
+            if not check_paths or any(not STORE.fullmatch(p) or p.endswith('.drv') for p in check_paths):
+                raise ValueError('Missing native check outputs')
+            # Checks can be expensive build-only outputs. Cache each completed
+            # check even if a later check or release verification fails.
+            outputs.write_text('\n'.join(check_paths) + '\n')
+            phase('upload-check-closure')
+            run(sys.executable, str(ROOT / 'ci/push-niks3.py'), '--outputs', str(outputs), env=publish_env)
         roots = sorted(set(roots))
         phase('inspect-built-closure')
         if not roots or not expected or not set(roots) <= set(expected):
