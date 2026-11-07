@@ -92,8 +92,19 @@ class TransferSafetyTests(unittest.TestCase):
             self.assertEqual(call.call_args_list[1].kwargs['timeout'], 120)
 
     def test_transfer_refuses_upload_credentials(self):
-        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {'ATTIC_TOKEN':'synthetic-fixture'}):
-            with self.assertRaises(ValueError): module.transfer('export', Path(temporary), 1024)
+        for name in ['ATTIC_TOKEN','FLAKEY_ATTIC_TOKEN','NIKS3_WRITE_TOKEN','NIKS3_AUTH_TOKEN_FILE']:
+            with self.subTest(name=name),tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {name:'synthetic-fixture'}):
+                with self.assertRaises(ValueError): module.transfer('export', Path(temporary), 1024)
+
+    def test_export_can_select_completed_build_manifest_without_changing_import_contract(self):
+        with patch.object(module,'transfer') as transfer, \
+                patch('sys.argv',['transfer','export','--directory','/tmp/archive','--manifest','cache-outputs.txt']):
+            self.assertEqual(module.main(),0)
+            self.assertEqual(transfer.call_args.args[3],Path('cache-outputs.txt'))
+        with patch.object(module,'transfer') as transfer, \
+                patch('sys.argv',['transfer','import','--directory','/tmp/archive','--manifest','cache-outputs.txt']), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(module.main(),1);transfer.assert_not_called()
 
 
 

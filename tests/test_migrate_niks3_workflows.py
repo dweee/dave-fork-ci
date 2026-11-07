@@ -27,6 +27,7 @@ target=".#packages.$TARGET_SYSTEM.$TARGET_PACKAGE"
 nix build "$target" --no-link --print-out-paths > outputs.txt
 echo "literal vars.ATTIC_PUSH_ENABLED is documentation" >> "$GITHUB_STEP_SUMMARY"
 '''
+RETAINED_BUILD_RUN = BUILD_RUN.replace('nix build "$target"', 'python3 ci/retain-build-outputs.py --target "$target" --manifest cache-outputs.txt -- nix build "$target"')
 
 
 def native_workflow(dual=True, approved_pr=True, cleanup=True):
@@ -65,6 +66,29 @@ def native_workflow(dual=True, approved_pr=True, cleanup=True):
 
 
 class MigrationSemantics(unittest.TestCase):
+    def test_immutable_native_selection_and_checks_stay_inside_retained_script(self):
+        before=native_workflow()
+        native=next(s for s in before['jobs']['build']['steps'] if s.get('name')=='Build')
+        original=('set -euo pipefail\n'
+                  'target=$(python3 ci/native-target.py package)\n'
+                  'check=$(python3 ci/native-target.py check)\n'
+                  'nix build "$target" --print-out-paths > outputs.txt\n'
+                  'python3 ci/native-target.py verify --outputs outputs.txt\n'
+                  'nix build "$check" --no-link\n')
+        native['run']=original
+        after,_=migration.migrate_document(before)
+        run=next(s['run'] for s in after['jobs']['build']['steps'] if s.get('name')=='Build')
+        self.assertIn(original.rstrip(),run)
+        self.assertIn('--target "$target" --target "$check"',run)
+        self.assertIn('--script "$RUNNER_TEMP/native-cache-build.sh"',run)
+        self.assertEqual(migration.migrate_document(after)[0],after)
+
+    def test_unrecognized_artifact_guard_cannot_be_silently_removed(self):
+        before=native_workflow()
+        export=next(s for s in before['jobs']['build']['steps'] if s.get('name')=='Export')
+        export['if']="${{ vars.EXTRA_EXPORT_GATE == 'true' }}"
+        with self.assertRaises(migration.MigrationError):migration.migrate_document(before)
+
     def test_native_build_without_prior_reader_gets_trusted_reader_and_cleanup(self):
         before = native_workflow(approved_pr=False, cleanup=False)
         before['jobs']['build']['steps'] = [s for s in before['jobs']['build']['steps']
@@ -72,7 +96,7 @@ class MigrationSemantics(unittest.TestCase):
         after, _ = migration.migrate_document(before)
         steps = after['jobs']['build']['steps']
         reader = next(i for i, s in enumerate(steps) if s.get('run') == 'python3 ci/configure-niks3.py --oidc')
-        build = next(i for i, s in enumerate(steps) if s.get('run') == BUILD_RUN)
+        build = next(i for i, s in enumerate(steps) if s.get('run') == RETAINED_BUILD_RUN)
         cleanup = next(i for i, s in enumerate(steps) if s.get('run') == 'python3 ci/configure-niks3.py --cleanup')
         export = next(i for i, s in enumerate(steps) if 'ci/transfer-attic.py export' in s.get('run', ''))
         self.assertEqual(steps[reader]['if'], READER_GUARD)
@@ -91,19 +115,25 @@ class MigrationSemantics(unittest.TestCase):
         self.assertEqual(before, unchanged, 'planning mutated caller input')
         self.assertEqual(manual, [])
         self.assertEqual(after['on'], before['on'])
-        self.assertEqual(after['jobs']['publish']['if'], PUBLISH_GUARD.replace('vars.ATTIC_PUSH_ENABLED', migration.CACHE_FLAG))
+        gate=PUBLISH_GUARD.replace('vars.ATTIC_PUSH_ENABLED',migration.CACHE_FLAG)[3:-2].strip()
+        gate=gate.replace("needs.build.result == 'success'","(needs.build.result == 'success' || needs.build.result == 'failure')")
+        self.assertEqual(after['jobs']['publish']['if'],'${{ always() && !cancelled() && ('+gate+') }}')
         reader = next(s for s in after['jobs']['build']['steps'] if s.get('run') == 'python3 ci/configure-niks3.py --oidc')
         self.assertEqual(reader['if'], READER_GUARD)
         self.assertNotIn('env', reader)
         serialized = json.dumps(after)
         for obsolete in ('secrets.ATTIC_TOKEN', 'secrets.ATTIC_PULL_TOKEN', 'ATTIC_APPROVED_PR_SHA', 'ci/configure-attic-read.py', 'ci/push-attic.py', 'nixpkgs#attic-client'):
             self.assertNotIn(obsolete, serialized)
-        self.assertEqual(next(s['run'] for s in after['jobs']['build']['steps'] if s.get('name') == 'Build'), BUILD_RUN)
+        self.assertEqual(next(s['run'] for s in after['jobs']['build']['steps'] if s.get('name') == 'Build'), RETAINED_BUILD_RUN)
         for job in ('build', 'publish'):
             self.assertEqual(after['jobs'][job]['needs'] if job == 'publish' else after['jobs'][job]['strategy'], before['jobs'][job]['needs'] if job == 'publish' else before['jobs'][job]['strategy'])
             for step in before['jobs'][job]['steps']:
-                if 'ci/transfer-attic.py' in step.get('run', '') or 'actions/upload-artifact@' in step.get('uses', '') or 'actions/download-artifact@' in step.get('uses', ''):
+                if ('ci/transfer-attic.py' in step.get('run', '') and ' export ' not in step['run']) or 'actions/download-artifact@' in step.get('uses', ''):
                     self.assertIn(step, after['jobs'][job]['steps'])
+                elif 'actions/upload-artifact@' in step.get('uses',''):
+                    actual=next(s for s in after['jobs'][job]['steps'] if s.get('uses')==step['uses'])
+                    self.assertEqual(actual['with'],step['with'])
+                    self.assertIn("steps.cache_transfer.outcome == 'success'",actual['if'])
         self.assertEqual(after['jobs']['build']['permissions'], {'contents': 'read', 'checks': 'read', 'id-token': 'write'})
         self.assertEqual(after['jobs']['publish']['permissions'], {'contents': 'read', 'id-token': 'write'})
 

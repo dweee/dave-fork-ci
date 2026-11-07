@@ -14,8 +14,8 @@ The composite [action.yml](action.yml) handles Git preparation/promotion without
 1. Poll the configured public upstream branch, latest stable GitHub release, or both. A six-hour caller schedule works without upstream cooperation; an optional `repository_dispatch` can wake it sooner. A release in somebody else's repository does not directly trigger your fork's workflow. Drafts and prereleases are excluded.
 2. Three-way merge the resolved upstream commits into the fork default branch in a scratch clone. Preserve fork commits and ancestry; never reset/rebase away local patches. Keep the fork's control and protected paths, including when upstream only conflicts there. Record resolved branch/release SHAs and publish an immutable `sync/upstream/<commit>` branch.
 3. Scan incoming Git history with trusted Gitleaks rules. Reject on-prem-only derivations before building. Then build selected packages/checks on each configured native platform and run configured argument-vector test commands. Package builds do not receive Git write or cache publication credentials. An unchanged upstream/release state uses no macOS build job.
-4. After **every build row succeeds**, reject a denied runtime path and then export only the selected runtime closures. The same runtime check runs again after import, before signature restore. Fresh Linux publisher jobs install the trusted pinned Niks3 client before importing NAR data, then upload through a repository/ref/event-bound GitHub OIDC grant. Darwin packages can be uploaded from Linux without running them.
-5. After every required cache upload succeeds, a fresh Git-only job checks the candidate SHA, ancestry, protected paths and current main. It then makes a normal fast-forward push to the fork's default branch. There is no force push, branch-protection bypass, package rebuild or candidate-script execution in this job. Cache failure prevents main promotion. Successful earlier cache rows remain reusable if a later row fails.
+4. Each cache-enabled row retains completed outputs from its selected package/check derivation graphs, including build-only dependencies and work completed before a later failure. Export their runtime closures as bounded data after enforcing the public policy; enforce that policy again after import. Fresh Linux publisher jobs install the trusted pinned Niks3 client before importing NAR data, then upload through a repository/ref/event-bound GitHub OIDC grant. Available partial artifacts remain reusable even when another row fails. Darwin packages can be uploaded from Linux without running them.
+5. After **all required builds, checks and cache uploads succeed**, a fresh Git-only job checks the candidate SHA, ancestry, protected paths and current main. It then makes a normal fast-forward push to the fork's default branch. There is no force push, branch-protection bypass, package rebuild or candidate-script execution in this job. Cache failure prevents main promotion; partial cache publication never turns a failed candidate into a release.
 
 When `cache: false` is explicitly selected, builds/checks remain mandatory and cache publication is skipped. Automatic promotion additionally requires both `auto-merge: true` and repository variable `FORK_CI_AUTO_MERGE=true`. The entire workflow also requires `FORK_CI_ENABLED=true`. The reusable workflow is installed; consumers explicitly enable it using those variables.
 
@@ -112,7 +112,11 @@ dependencies from each selected package/check derivation graph. JSON v4 fixed
 output identities are resolved by Nix, then intersected with the local daemon’s
 valid paths; unrelated store outputs and unfinished derivations are excluded.
 These uploads happen even when the selected build fails later. Official-cache
-signatures filter substituted upstream outputs using local metadata. This does
-not change the isolated upstream-candidate artifact workflow: candidate runtime
-archives still follow its existing all-rows-success policy. Channel promotion
-still requires every original build, native check and signed cache verifier.
+signatures filter substituted upstream outputs using local metadata. This
+also applies to the isolated upstream-candidate and migrated native artifact
+workflows. Their separate cache manifests include completed selected graph
+outputs after failure; archives keep the existing path/byte bounds and public
+guards. Builds have no writer, and publisher jobs import data without executing
+candidate programs. Channel promotion still requires every original build,
+native check and signed cache verifier; upstream promotion still requires every
+build/check row and cache job to pass.
