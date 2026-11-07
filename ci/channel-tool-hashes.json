@@ -8,6 +8,7 @@
   "configure-attic-read.py": "4b663ae0e073327dbcdcdaabef23a58a0a241f2f0fcfe3fd5f351b9242cbf669",
   "configure-niks3.py": "344f8465ab92c8c3276aeae631ff8902c074b050d15085b9296ad961c3af9a83",
   "push-niks3.py": "2afe76b4ad5b64566591416f34f84e4dcb30ed8815d6b0cf22463114b4d16798",
+  "test-push-niks3.py": "cd9758082f95cc113a1ad65f3b17cdaac7d741ba92fe26d2213d3e9fd817eb45",
   "niks3-oidc-token.py": "6eb6bd8faa603dd399c8ae070708d5c0f305b74705a25ea034067e853ff9c989",
   "install-niks3.sh": "08f799108b9e5f6927230ae91d8a555f68ab2b8aeb6b1abdd75345f72fbbbf25"
 }

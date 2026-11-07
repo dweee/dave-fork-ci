@@ -41,7 +41,7 @@ TAILNET_ATTIC = 'http://icicle.eel-ling.ts.net:8080'
 CACHE_SERVERS = {'nix': INTERNAL_ATTIC}
 HELPERS = ['release-channel.py', 'test-release-channel.py', 'update-inputs.py',
            'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-attic-read.py',
-           'configure-niks3.py', 'push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh']
+           'configure-niks3.py', 'push-niks3.py', 'test-push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh']
 
 
 # Bounded Nix downloads: fail fast on a dead connection and retry transient DNS,
@@ -249,14 +249,14 @@ def install(args):
         if config.get('excludedSystems'):
             checks = job(None if github else 'nix-light')
             checks['steps'] = checkout()+bootstrap(runner=checks['runs-on'])+[{'name': 'Automation regression tests',
-                'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')}]
+                'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-push-niks3.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')}]
             write('automation-checks.yml', {'name': 'Automation checks', 'on': {'push': {'branches':[args.branch]},
                 'pull_request':{}, 'workflow_dispatch':{}}, 'permissions':{'contents':'read'}, 'jobs':{'test':checks}})
     if config.get('targets'):
         test = job(None if github else 'nix-light')
         test['outputs'] = {'revision': expr('steps.selection.outputs.revision')}
         test['steps'] = checkout()+bootstrap(runner=test['runs-on'])+[
-            {'name': 'Regression tests and complete inventory policy', 'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')},
+            {'name': 'Regression tests and complete inventory policy', 'run': python('ci/test-release-channel.py')+'\n'+python('ci/test-push-niks3.py')+'\n'+python('ci/test-update-automation.py')+'\n'+python('ci/release-channel.py policy')},
             {'name': 'Select immutable revision', 'id': 'selection',
              'env': {'REVISION': expr('inputs.revision || github.sha')},
              'run': python('-c \'import os,re; s=os.environ["REVISION"]; assert re.fullmatch("[a-f0-9]{40}",s); '
