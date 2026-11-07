@@ -41,13 +41,13 @@ def copy_bounded(source, target, limit):
     return total
 
 
-def transfer(mode, directory, limit):
-    if os.environ.get("ATTIC_TOKEN"):
-        raise ValueError("A transfer job must not receive an Attic upload credential")
+def transfer(mode, directory, limit, source_manifest=None):
+    if any(os.environ.get(name) for name in ('ATTIC_TOKEN', 'FLAKEY_ATTIC_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE')):
+        raise ValueError("A transfer job must not receive an upload credential")
     directory.mkdir(parents=True, exist_ok=True)
     manifest = directory / "outputs.txt"
     if mode == "export":
-        paths = roots(Path("outputs.txt"))
+        paths = roots(source_manifest or Path("outputs.txt"))
         # Reject denied runtime paths before an archive or public artifact exists.
         requisites = policy.runtime(paths)
         if any(not re.fullmatch(r"/nix/store/[a-z0-9]{32}-[^/\s]+", p) for p in requisites):
@@ -102,12 +102,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["export", "import"])
     parser.add_argument("--directory", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
     args = parser.parse_args()
     try:
         mib = int(os.environ.get("ATTIC_MAX_CLOSURE_MIB") or "2048")
         if not 1 <= mib <= 8192:
             raise ValueError("Closure transfer limit must be between 1 and 8192 MiB")
-        transfer(args.mode, args.directory, mib * 1024 * 1024)
+        if args.manifest is not None:
+            if args.mode != 'export':
+                raise ValueError('Only export selects a source manifest')
+            transfer(args.mode, args.directory, mib * 1024 * 1024, args.manifest)
+        else:
+            transfer(args.mode, args.directory, mib * 1024 * 1024)
     except TransferSizeExceeded:
         print("Nix closure transfer exceeded ATTIC_MAX_CLOSURE_MIB; no cache publication is authorized.", file=sys.stderr)
         return 1

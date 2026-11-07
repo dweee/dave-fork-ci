@@ -41,7 +41,8 @@ TAILNET_ATTIC = 'http://icicle.eel-ling.ts.net:8080'
 CACHE_SERVERS = {'nix': INTERNAL_ATTIC}
 HELPERS = ['release-channel.py', 'test-release-channel.py', 'update-inputs.py',
            'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-attic-read.py',
-           'configure-niks3.py', 'push-niks3.py', 'test-push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh']
+           'configure-niks3.py', 'push-niks3.py', 'test-push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh',
+           'retain-build-outputs.py', 'test-retain-build-outputs.py', 'transfer-attic.py', 'test-transfer-attic.py']
 
 
 # Bounded Nix downloads: fail fast on a dead connection and retry transient DNS,
@@ -166,7 +167,7 @@ def install(args):
     for name in HELPERS:
         if ci / name != HERE / name:
             shutil.copy2(HERE / name, ci / name)
-    for name in ['push-attic.py']:
+    for name in ['push-attic.py', 'public-closure.py']:
         if not (ci / name).exists():
             shutil.copy2(HERE / name, ci / name)
     # Bytecode must never be tracked: running the helpers rewrites it.

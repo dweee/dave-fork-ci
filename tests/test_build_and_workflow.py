@@ -228,9 +228,29 @@ class BuildAndWorkflowTests(unittest.TestCase):
         source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
         build_job = source.split('\n  build:', 1)[1].split('\n  cache:', 1)[0]
         export = build_job.split('- name: Export runtime closures as data', 1)[1].split('\n      - ', 1)[0]
-        self.assertIn('if: inputs.cache', export)
+        self.assertIn('inputs.cache', export)
+        self.assertIn('always() && !cancelled()', export)
+        self.assertIn("hashFiles('cache-outputs.txt') != ''", export)
+        self.assertIn('--manifest cache-outputs.txt', export)
         upload = build_job.split('actions/upload-artifact@', 1)[0].rsplit('\n      - ', 1)[1]
-        self.assertIn('if: inputs.cache', upload)
+        self.assertIn('inputs.cache', upload)
+        self.assertIn("steps.cache_transfer.outcome == 'success'", upload)
+
+    def test_failed_candidate_checks_retain_cache_data_without_success_manifest(self):
+        import copy
+        policy = copy.deepcopy(POLICY);policy['matrix'][0]['tests']=[['regression-check']]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'.fork-ci.json').write_text(json.dumps(policy))
+            outputs=root/'outputs';cache=root/'cache'
+            path='/nix/store/'+'a'*32+'-package'
+            with patch.object(sys,'argv',['build','--source',str(root),'--system','x86_64-linux','--outputs',str(outputs),'--cache-outputs',str(cache)]), \
+                    patch.dict(os.environ,{},clear=True), \
+                    patch.object(build,'cache_collector') as collector, \
+                    patch.object(build.subprocess,'check_output',side_effect=lambda args,**kw:b'a'*40 if args[0]=='git' else json.dumps([{'outputs':{'out':path}}]).encode()), \
+                    patch.object(build.subprocess,'run',side_effect=fail_command(['regression-check'])):
+                with self.assertRaises(subprocess.CalledProcessError):build.main()
+                collector.return_value.retain.assert_called_once_with([path])
+            self.assertFalse(outputs.exists())
 
     def test_all_external_actions_are_pinned(self):
         import re

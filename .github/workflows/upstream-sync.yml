@@ -182,15 +182,16 @@ jobs:
         env:
           SYSTEM: ${{ matrix.system }}
           ATTIC_HTTP2: ${{ inputs.cache-http2 }}
-        run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt
+        run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt ${{ inputs.cache && '--cache-outputs cache-outputs.txt' || '' }}
       # Only the cache job reads this export; without it, an over-limit closure
       # would fail a build that publishes nothing.
       - name: Export runtime closures as data
-        if: inputs.cache
+        id: cache_transfer
+        if: ${{ always() && !cancelled() && inputs.cache && hashFiles('cache-outputs.txt') != '' }}
         env:
           ATTIC_MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
-        run: python3 controller/ci/transfer-attic.py export --directory attic-transfer
-      - if: inputs.cache
+        run: python3 controller/ci/transfer-attic.py export --directory attic-transfer --manifest cache-outputs.txt
+      - if: ${{ always() && !cancelled() && inputs.cache && steps.cache_transfer.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fork-cache-${{ matrix.system }}-${{ needs.prepare.outputs.candidate }}
@@ -201,7 +202,7 @@ jobs:
 
   cache:
     needs: [prepare, build]
-    if: inputs.cache && needs.build.result == 'success' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    if: ${{ always() && !cancelled() && inputs.cache && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'failure') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:

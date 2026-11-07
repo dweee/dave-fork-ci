@@ -350,6 +350,7 @@ def migrate_document(document, controller_revision=None):
         remaining = json.dumps(job)
         if any('steps.' + name + '.' in remaining for name in removed_ids):
             raise MigrationError('Removed cache step still has referenced outputs: ' + str(job_name))
+    retain_artifact_builds(document)
     document = cache_flags(document)
     def check_environments(value):
         if isinstance(value, dict):
@@ -366,6 +367,85 @@ def migrate_document(document, controller_revision=None):
     if re.search(r'secrets\.(?:ATTIC_TOKEN|FLAKEY_ATTIC_TOKEN|ATTIC_PULL_TOKEN)\b', remaining):
         raise MigrationError('Unrecognized static cache secret reference requires manual repair')
     return document, manual
+
+
+def retain_artifact_builds(document):
+    """Keep partial cache data, while build results continue to block promotion."""
+    builds = set()
+    for name, job in document['jobs'].items():
+        steps = job.get('steps', [])
+        native = [step for step in steps
+                  if ('target=".#packages.$TARGET_SYSTEM.$TARGET_PACKAGE"' in step.get('run', '')
+                      or ('target=$(python3 ci/native-target.py package)' in step.get('run', '')
+                          and 'check=$(python3 ci/native-target.py check)' in step.get('run', '')))
+                  and 'nix build "$target"' in step.get('run', '')
+                  and {'TARGET_SYSTEM', 'TARGET_PACKAGE'} <= set(step.get('env', {}))]
+        exports = [step for step in steps if command(step.get('run', ''), 'transfer-attic.py') is not None
+                   and command(step.get('run', ''), 'transfer-attic.py')[:1] == ['export']]
+        if not native or not exports:
+            continue
+        if len(native) != 1 or len(exports) != 1:
+            raise MigrationError('Review multiple native build/export steps: ' + str(name))
+        export = exports[0]
+        args = command(export['run'], 'transfer-attic.py')
+        if (args[:2] != ['export', '--directory'] or len(args) not in {3, 5}
+                or not re.fullmatch(r'[A-Za-z0-9_/-]+', args[2])
+                or (len(args) == 5 and args[3:] != ['--manifest', 'cache-outputs.txt'])):
+            raise MigrationError('Review nonstandard native export: ' + str(name))
+        directory = args[2].rstrip('/')
+        uploads = [step for step in steps if step.get('uses', '').startswith('actions/upload-artifact@')
+                   and step.get('with', {}).get('path', '').rstrip('/') == directory]
+        if len(uploads) != 1 or any(step is not export and step.get('id') == 'cache_transfer' for step in steps):
+            raise MigrationError('Review native artifact upload: ' + str(name))
+        if 'id' in export and export['id'] != 'cache_transfer':
+            raise MigrationError('Review referenced export step: ' + str(name))
+        export_gate = "${{ always() && !cancelled() && hashFiles('cache-outputs.txt') != '' }}"
+        upload_gate = "${{ always() && !cancelled() && steps.cache_transfer.outcome == 'success' }}"
+        if export.get('if', '') not in {'', 'success()', '${{ success() }}', export_gate} or uploads[0].get('if', '') not in {'', 'success()', '${{ success() }}', upload_gate}:
+            raise MigrationError('Review additional native artifact guards: ' + str(name))
+        if 'ci/retain-build-outputs.py' not in native[0]['run']:
+            if 'target=$(python3 ci/native-target.py package)' in native[0]['run']:
+                original = native[0]['run']
+                if 'FLAKEY_CACHE_BUILD' in original:
+                    raise MigrationError('Review native script delimiter: ' + str(name))
+                native[0]['run'] = ('set -euo pipefail\n'
+                    'target=$(python3 ci/native-target.py package)\n'
+                    'check=$(python3 ci/native-target.py check)\n'
+                    'cat > "$RUNNER_TEMP/native-cache-build.sh" <<\'FLAKEY_CACHE_BUILD\'\n'
+                    + original.rstrip() + '\nFLAKEY_CACHE_BUILD\n'
+                    'python3 ci/retain-build-outputs.py --target "$target" --target "$check" '
+                    '--manifest cache-outputs.txt --script "$RUNNER_TEMP/native-cache-build.sh"\n')
+            else:
+                native[0]['run'] = native[0]['run'].replace('nix build "$target"',
+                    'python3 ci/retain-build-outputs.py --target "$target" --manifest cache-outputs.txt -- nix build "$target"', 1)
+        export.update(id='cache_transfer',
+            run='python3 ci/transfer-attic.py ' + shlex.join(args[:3] + ['--manifest', 'cache-outputs.txt']),
+            **{'if': export_gate})
+        uploads[0]['if'] = upload_gate
+        builds.add(name)
+    for name, job in document['jobs'].items():
+        needs = job.get('needs', [])
+        needs = [needs] if isinstance(needs, str) else needs
+        dependencies = builds.intersection(needs)
+        if not dependencies or not any(command(step.get('run', ''), 'push-niks3.py') is not None
+                                       for step in job.get('steps', [])):
+            continue
+        gate = job.get('if', '')
+        if gate.startswith('${{') and gate.endswith('}}'):
+            gate = gate[3:-2].strip()
+        if 'success()' in gate:
+            raise MigrationError('Review explicit successful-build predicate: ' + str(name))
+        for build in dependencies:
+            pattern = r'needs\.' + re.escape(build) + r"\.result\s*==\s*(['\"])success\1"
+            condition = f"(needs.{build}.result == 'success' || needs.{build}.result == 'failure')"
+            if condition not in gate:
+                if re.search(pattern, gate):
+                    gate = re.sub(pattern, lambda _: condition, gate)
+                else:
+                    gate = condition + ' && (' + gate + ')'
+        if 'always()' not in gate:
+            gate = 'always() && !cancelled() && (' + gate + ')'
+        job['if'] = '${{ ' + gate + ' }}'
 
 
 def migrate_directory(directory, controller_revision=None, check=False):
