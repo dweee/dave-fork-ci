@@ -65,6 +65,25 @@ def native_workflow(dual=True, approved_pr=True, cleanup=True):
 
 
 class MigrationSemantics(unittest.TestCase):
+    def test_native_build_without_prior_reader_gets_trusted_reader_and_cleanup(self):
+        before = native_workflow(approved_pr=False, cleanup=False)
+        before['jobs']['build']['steps'] = [s for s in before['jobs']['build']['steps']
+                                             if 'configure-attic-read.py' not in s.get('run', '')]
+        after, _ = migration.migrate_document(before)
+        steps = after['jobs']['build']['steps']
+        reader = next(i for i, s in enumerate(steps) if s.get('run') == 'python3 ci/configure-niks3.py --oidc')
+        build = next(i for i, s in enumerate(steps) if s.get('run') == BUILD_RUN)
+        cleanup = next(i for i, s in enumerate(steps) if s.get('run') == 'python3 ci/configure-niks3.py --cleanup')
+        export = next(i for i, s in enumerate(steps) if 'ci/transfer-attic.py export' in s.get('run', ''))
+        self.assertEqual(steps[reader]['if'], READER_GUARD)
+        self.assertEqual(steps[cleanup]['if'], '${{ always() }}')
+        self.assertLess(reader, build)
+        self.assertLess(build, cleanup)
+        self.assertLess(cleanup, export)
+        self.assertEqual(after['jobs']['build']['permissions']['id-token'], 'write')
+        again, _ = migration.migrate_document(after)
+        self.assertEqual(again, after)
+
     def test_removes_static_credentials_but_preserves_guards_build_and_transfers(self):
         before = native_workflow()
         unchanged = copy.deepcopy(before)

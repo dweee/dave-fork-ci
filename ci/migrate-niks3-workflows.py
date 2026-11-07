@@ -192,7 +192,7 @@ def clean_environment(step):
 
 def cache_flags(value, field=None):
     if isinstance(value, str):
-        if field not in {'if', 'auto-merge'} or 'vars.NIKS3_PUSH_ENABLED' in value:
+        if field not in {'if', 'auto-merge', 'cache'} or 'vars.NIKS3_PUSH_ENABLED' in value:
             return value
         return re.sub(r'\bvars\.ATTIC_PUSH_ENABLED\b', CACHE_FLAG, value)
     if isinstance(value, dict):
@@ -322,6 +322,20 @@ def migrate_document(document, controller_revision=None):
                         raise MigrationError('Mixed Attic Nix configuration requires manual repair')
                 settings[field] = config
             rewritten.append(step)
+        # Some native jobs only had an isolated publisher and never read either
+        # private cache. Add the reader to this known package-build shape too;
+        # PR events still build with public caches alone.
+        native_build = next((i for i, step in enumerate(rewritten)
+                             if 'target=".#packages.$TARGET_SYSTEM.$TARGET_PACKAGE"' in step.get('run', '')
+                             and 'nix build "$target"' in step.get('run', '')
+                             and {'TARGET_SYSTEM', 'TARGET_PACKAGE'} <= set(step.get('env', {}))), None)
+        if native_build is not None and not has_reader:
+            rewritten.insert(native_build, {
+                'name': 'Configure read-only Niks3 access with GitHub OIDC',
+                'if': "${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}",
+                'run': 'python3 ci/configure-niks3.py --oidc',
+            })
+            has_reader = True
         if has_reader:
             if not any(command(step.get('run', ''), 'configure-niks3.py') == ['--cleanup'] for step in rewritten):
                 index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-attic.py export' in step.get('run', '')), len(rewritten))
