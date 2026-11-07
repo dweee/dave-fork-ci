@@ -106,3 +106,13 @@ Generated jobs use their own ephemeral container store, start the matching
 daemon and enable two parallel evaluation workers. Other labels retain their
 existing setup. This option does not distribute images or migrate persistent
 stores; arrange and verify those separately before enabling it.
+
+Trusted owning-repository release channels also retain completed build-only
+dependencies from each selected package/check derivation graph. JSON v4 fixed
+output identities are resolved by Nix, then intersected with the local daemon’s
+valid paths; unrelated store outputs and unfinished derivations are excluded.
+These uploads happen even when the selected build fails later. Official-cache
+signatures filter substituted upstream outputs using local metadata. This does
+not change the isolated upstream-candidate artifact workflow: candidate runtime
+archives still follow its existing all-rows-success policy. Channel promotion
+still requires every original build, native check and signed cache verifier.
