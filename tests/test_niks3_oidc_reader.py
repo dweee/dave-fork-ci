@@ -89,6 +89,12 @@ class Niks3OIDCReader(unittest.TestCase):
         self.assertEqual(parse_qs(urlsplit(sent.full_url).query)["audience"], ["https://niks3.monke.fail/read"])
         self.assertEqual(sent.get_header("Authorization"), "Bearer synthetic-request-credential")
 
+    def test_owning_repository_dispatch_can_acquire_a_read_only_token(self):
+        os.environ['GITHUB_EVENT_NAME'] = 'repository_dispatch'
+        _, request, _ = self.configure()
+        self.assertEqual(parse_qs(urlsplit(request.call_args.args[0].full_url).query)['audience'],
+                         ['https://niks3.monke.fail/read'])
+
     def test_token_source_keeps_publisher_and_reader_audiences_separate(self):
         spec = importlib.util.spec_from_file_location("oidc_token_source_under_test", ROOT / "ci/niks3-oidc-token.py")
         source = importlib.util.module_from_spec(spec)

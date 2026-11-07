@@ -2,7 +2,7 @@
 
 Reusable upstream maintenance for GitHub forks with Nix packaging and local changes.
 
-The composite [action.yml](action.yml) handles Git preparation/promotion without executing candidate code. The reusable [reusable workflow](.github/workflows/upstream-sync.yml) connects it to isolated native builds, checks and Attic publication. A small generated caller is the only workflow each consuming fork needs.
+The composite [action.yml](action.yml) handles Git preparation/promotion without executing candidate code. The reusable [reusable workflow](.github/workflows/upstream-sync.yml) connects it to isolated native builds, checks and Niks3 publication. A small generated caller is the only workflow each consuming fork needs.
 
 ## Remotes and which is canonical
 
@@ -13,9 +13,9 @@ The composite [action.yml](action.yml) handles Git preparation/promotion without
 
 1. Poll the configured public upstream branch, latest stable GitHub release, or both. A six-hour caller schedule works without upstream cooperation; an optional `repository_dispatch` can wake it sooner. A release in somebody else's repository does not directly trigger your fork's workflow. Drafts and prereleases are excluded.
 2. Three-way merge the resolved upstream commits into the fork default branch in a scratch clone. Preserve fork commits and ancestry; never reset/rebase away local patches. Keep the fork's control and protected paths, including when upstream only conflicts there. Record resolved branch/release SHAs and publish an immutable `sync/upstream/<commit>` branch.
-3. Scan incoming Git history with trusted Gitleaks rules. Reject on-prem-only derivations before building. Then build selected packages/checks on each configured native platform and run configured argument-vector test commands. Package builds do not receive Git write or Attic credentials. An unchanged upstream/release state uses no macOS build job.
-4. After **every build row succeeds**, reject a denied runtime path and then export only the selected runtime closures. The same runtime check runs again after import, before signature restore. Fresh Linux publisher jobs install a trusted pinned Attic client before importing NAR data and then upload to a cache-scoped candidate cache. Darwin packages can be uploaded from Linux without running them.
-5. After every required cache upload succeeds, a fresh Git-only job checks the candidate SHA, ancestry, protected paths and current main. It then makes a normal fast-forward push to the fork's default branch. There is no force push, branch-protection bypass, package rebuild or candidate-script execution in this job. Cache failure prevents main promotion. Successful earlier cache rows may remain in the isolated candidate cache if a later row fails.
+3. Scan incoming Git history with trusted Gitleaks rules. Reject on-prem-only derivations before building. Then build selected packages/checks on each configured native platform and run configured argument-vector test commands. Package builds do not receive Git write or cache publication credentials. An unchanged upstream/release state uses no macOS build job.
+4. After **every build row succeeds**, reject a denied runtime path and then export only the selected runtime closures. The same runtime check runs again after import, before signature restore. Fresh Linux publisher jobs install the trusted pinned Niks3 client before importing NAR data, then upload through a repository/ref/event-bound GitHub OIDC grant. Darwin packages can be uploaded from Linux without running them.
+5. After every required cache upload succeeds, a fresh Git-only job checks the candidate SHA, ancestry, protected paths and current main. It then makes a normal fast-forward push to the fork's default branch. There is no force push, branch-protection bypass, package rebuild or candidate-script execution in this job. Cache failure prevents main promotion. Successful earlier cache rows remain reusable if a later row fails.
 
 When `cache: false` is explicitly selected, builds/checks remain mandatory and cache publication is skipped. Automatic promotion additionally requires both `auto-merge: true` and repository variable `FORK_CI_AUTO_MERGE=true`. The entire workflow also requires `FORK_CI_ENABLED=true`. The reusable workflow is installed; consumers explicitly enable it using those variables.
 
@@ -50,22 +50,29 @@ python3 bin/render_caller.py --tool-repository YOUR-OWNER/dave-fork-ci \
 
 The tool rejects mutable pins and refuses to write directly into live workflow directories. After reviewing the generated file, install it as `.github/workflows/fork-sync.yml` in the fork. The caller and `tool-revision` must identify the same reviewed action release. The default branch can be named `main` or another valid branch; it is taken from GitHub's repository metadata.
 
-Set `ATTIC_ENDPOINT` and `ATTIC_CACHE` as repository variables, and `ATTIC_TOKEN` as a secret scoped only to that isolated cache. Do not use a production/personal cache-wide credential. The installer is pinned `nixbuild/nix-quick-install-action` v35 with Nix 2.34.7. Trusted client/scanner installation is substitution-only from a pinned nixpkgs revision. A missing public substitute fails rather than executing build dependencies with publication credentials.
+The cache administrator must register the owning repository, its trusted source
+refs and allowed events with the Niks3 OIDC provider. No static fleet or cache
+administrator credential belongs in GitHub. The generated caller grants
+`id-token: write`; the publisher requests audience `https://niks3.monke.fail`.
+GitHub documents the required [OIDC permission and reusable-workflow context](https://docs.github.com/en/actions/reference/security/oidc).
 
-For warm builds, also set the public `ATTIC_SUBSTITUTER` URL and `ATTIC_PUBLIC_KEY`
-verification key. Pass them through the corresponding reusable workflow inputs.
-Package builds and Nix development-shell tests may read this public cache without
-an upload token. Trusted scanner and publisher-client installation still uses only
-the official Nix cache, before any candidate code or runtime closure is imported.
+Unreviewed upstream candidate builds use public caches only. Approved default-branch
+native and release jobs may separately configure the short-lived read-only audience
+`https://niks3.monke.fail/read` through `ci/configure-niks3.py --oidc`. Its protected
+netrc refreshes during long jobs and is removed before artifact export. PR events
+receive no private-cache reader. Niks3 publication scope also implies reads; only
+the dedicated reader grant is read-only.
 
-The `cache-http2` input defaults to true. Set repository variable `ATTIC_HTTP2=false`
-with the generated caller to select HTTPS over HTTP/1.1 when a cache's streaming
-proxy cannot reliably serve HTTP/2 downloads. Certificate and Nix signature checks
-remain enabled.
+The workflow installs pinned Determinate Nix 3.24.1. Trusted scanner installation
+uses official public substitutes. The publisher client is installed from the
+exact trusted source in `ci/install-niks3.sh` before candidate data is imported.
+It may build that pinned public client if a substitute is unavailable; it never
+runs candidate package programs in the publisher job.
 
-Enable `FORK_CI_ENABLED` for a supervised candidate-only run first; leave `FORK_CI_AUTO_MERGE` unset. Measure real cold/warm minutes, disk and artifact sizes. Closure exports default to a 2 GiB uncompressed limit per platform, configurable up to 4 GiB. Artifacts expire after one day. Test a real upload and independent consumer substitution. Once those pass and dependency/security findings are resolved, configure the repository's branch rules for the intended repository-scoped actor and enable `FORK_CI_AUTO_MERGE`. The action respects existing rules and fails if a direct push is forbidden; it does not modify them or request a bypass token.
-
-`GITHUB_TOKEN` pushes normally do not trigger further push workflows. All required validation therefore runs in this same workflow before promotion; no unobserved downstream workflow is assumed. This action does not create GitHub releases or publish release binaries. GitHub may delay scheduled jobs or disable schedules in inactive public repositories, so this is polling, not a guaranteed immediate event subscription.
+The `cache-http2` input still controls Nix transport behavior and defaults to true.
+Set it to false when a cache proxy cannot reliably serve HTTP/2; certificate and
+Nix signature checks remain enabled. Historical `attic-*` inputs and helper
+filenames remain compatibility interfaces, not active Attic publication settings.
 
 ## Failures and review
 
@@ -83,11 +90,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 ci/test-public-closure.py
 actionlint -shellcheck= -pyflakes= .github/workflows/upstream-sync.yml
 ```
 
-Tests include real local HTTP Git repositories for prepare → immutable candidate → promotion → unchanged/no-op, stable release publication over already merged source, rewound upstreams, conflicts, protected files, preserved history, explicit authorship and stale-main rejection. Local tests cannot prove GitHub permissions, hosted runner behavior, branch rules, cost or authenticated Attic uploads. Those remain unverified until the supervised pilot.
+Tests include real local HTTP Git repositories for prepare → immutable candidate → promotion → unchanged/no-op, stable release publication over already merged source, rewound upstreams, conflicts, protected files, preserved history, explicit authorship and stale-main rejection. Local tests cannot prove GitHub permissions, hosted runner behavior, branch rules, cost or authenticated Niks3 OIDC uploads. Those remain unverified until the supervised pilot.
 
 Reference: [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows), [event behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), [workflow security](https://docs.github.com/en/actions/reference/security/secure-use).
 
-Every successful candidate build retains a Nix closure archive for one day, independently of Attic publication.
+Every successful candidate build retains a Nix closure archive for one day, independently of Niks3 publication.
 
 ### Optional Determinate Nix on Forgejo runners
 
