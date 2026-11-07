@@ -240,8 +240,13 @@ def install(args):
                 result['env']['NIX_REMOTE'] = 'daemon'
                 result['env']['NIX_CONFIG'] += 'extra-experimental-features = parallel-eval\neval-cores = 2\n'
         return result
-    def python(command):
-        return ('python3 ' if github else 'nix shell --option accept-flake-config false --no-write-lock-file --inputs-from . nixpkgs#python3 -c python3 ') + command
+    def shell(command, readonly=False):
+        if github:
+            return command
+        flags = '--option max-jobs 0 --option builders "" --option allow-import-from-derivation false ' if readonly else ''
+        return 'nix shell '+flags+'--option accept-flake-config false --no-write-lock-file --inputs-from . nixpkgs#python3 -c '+command
+    def python(command, readonly=False):
+        return shell('python3 '+command, readonly=readonly)
     source_only = not (root / 'flake.nix').exists()
     if not config.get('targets'):
         previous = workflow_dir / 'release-channels.yml'
@@ -285,7 +290,7 @@ def install(args):
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
                  'run': python('ci/release-channel.py build --system '+system)},
                 {'name': 'Remove cache reader', 'if': expr('always()'),
-                 'run': python('ci/configure-attic-read.py --cleanup')}]
+                 'run': python('ci/configure-attic-read.py --cleanup', readonly=True)}]
             if github:
                 native['permissions'] = {'contents': 'read', 'id-token': 'write'}
                 for step in native['steps']:
@@ -305,13 +310,17 @@ def install(args):
                                            'NIKS3_WRITE_TOKEN': expr('secrets.FLAKEY_NIKS3_WRITE_TOKEN')}
                     elif 'release-channel.py build' in step.get('run', ''):
                         step.pop('env', None)
-            native['steps'].insert(-2, {'name': 'Install pinned Niks3 publisher', 'run': 'bash ci/install-niks3.sh'})
+            native['steps'][-2:-2] = [
+                {'name': 'Install pinned Niks3 publisher and retain its build dependencies',
+                 'run': shell('bash ci/install-niks3.sh --retain-bootstrap')},
+                {'name': 'Publish bootstrap client and completed build dependencies',
+                 'run': python('ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt', readonly=True)}]
             if not github and system.endswith('-darwin'):
                 # The host owns scheduling, power and capacity policy. Recheck
                 # before tool bootstraps; the release helper also checks before
                 # every package/check build in an already accepted job.
                 for step in native['steps']:
-                    if step.get('run', '').startswith('nix shell '):
+                    if step.get('run', '').startswith('nix shell ') and '--option max-jobs 0 --option builders ""' not in step['run']:
                         step['run'] = '"$NATIVE_BUILD_ADMISSION_COMMAND"\n' + step['run']
                 native['steps'][0]['run'] = ('test -n "${NATIVE_BUILD_ADMISSION_COMMAND:-}"\n'
                     '"$NATIVE_BUILD_ADMISSION_COMMAND"\n' + native['steps'][0]['run'])
@@ -329,7 +338,7 @@ def install(args):
                  'env': {'SOURCE_TOKEN': expr('github.token')},
                  'run': python('ci/release-channel.py retain --system '+system)},
                 {'name': 'Remove private reader', 'if': expr('always()'),
-                 'run': python('ci/configure-attic-read.py --cleanup')}]
+                 'run': python('ci/configure-attic-read.py --cleanup', readonly=True)}]
             if github:
                 retention['permissions'] = {'contents': 'read', 'id-token': 'write'}
                 for step in retention['steps']:

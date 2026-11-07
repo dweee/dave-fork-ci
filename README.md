@@ -120,3 +120,13 @@ guards. Builds have no writer, and publisher jobs import data without executing
 candidate programs. Channel promotion still requires every original build,
 native check and signed cache verifier; upstream promotion still requires every
 build/check row and cache job to pass.
+
+Publisher installation uses `ci/install-niks3.sh --retain-bootstrap` to retain
+the pinned public client's own completed derivation graph in
+`niks3-bootstrap-outputs.txt`. A separate trusted publisher step uploads that
+manifest before importing candidate artifacts. Installation strips writer,
+forge and OIDC request credentials while preserving read-only substitution;
+running the installer without the flag does not create a publication manifest.
+Private Darwin jobs recheck host admission after graph evaluation. Publication
+and credential cleanup disable source builds, so they can finish after the
+host's build window closes. Read-only release-retention jobs gain no publisher.

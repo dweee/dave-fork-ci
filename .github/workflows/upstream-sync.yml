@@ -235,7 +235,9 @@ jobs:
       - name: Read Niks3 before installing the pinned publisher
         run: python3 controller/ci/configure-niks3.py --oidc
       - name: Install pinned Niks3 before importing closures
-        run: bash controller/ci/install-niks3.sh
+        run: bash controller/ci/install-niks3.sh --retain-bootstrap
+      - name: Publish bootstrap client and completed build dependencies
+        run: python3 controller/ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: fork-cache-${{ matrix.system }}-${{ needs.prepare.outputs.candidate }}
