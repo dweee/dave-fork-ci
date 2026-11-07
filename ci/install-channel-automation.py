@@ -459,7 +459,7 @@ Required repository configuration:
 - Forgejo requires repository-scoped `FLAKEY_NIKS3_READ_NETRC` and
   `FLAKEY_NIKS3_WRITE_TOKEN`. Niks3 is its substitute and verified release cache;
   existing Attic secrets and historical objects remain.
-- GitHub requires no Niks3 static secrets: trusted publishers request write-only
+- GitHub requires no Niks3 static secrets: trusted publishers request a write grant through
   OIDC with audience `https://niks3.monke.fail`. Trusted readers use the separate
   read-only audience `https://niks3.monke.fail/read` and `/oidc` cache object route,
   refreshing the job-local netrc until cleanup. PR events receive no private
