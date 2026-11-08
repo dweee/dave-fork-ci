@@ -142,7 +142,8 @@ class Niks3OIDCReader(unittest.TestCase):
         if nix is None:
             self.skipTest("Nix is needed to exercise its actual configuration precedence")
         previous = self.root / "previous.conf"
-        previous.write_text("netrc-file = " + str(self.root / "managed.netrc") + "\n")
+        previous.write_text("netrc-file = " + str(self.root / "managed.netrc") + "\n"
+                            "extra-experimental-features = ca-derivations\n")
         os.environ["NIX_USER_CONF_FILES"] = str(previous)
         self.configure()
         exported = dict(line.split("=", 1) for line in Path(os.environ["GITHUB_ENV"]).read_text().splitlines())
@@ -154,6 +155,7 @@ class Niks3OIDCReader(unittest.TestCase):
                                 env=environment, capture_output=True, text=True, check=True, timeout=30)
         settings = json.loads(result.stdout)
         self.assertEqual(settings["netrc-file"]["value"], str(self.directory / "netrc"))
+        self.assertIn("ca-derivations", settings["experimental-features"]["value"])
         self.assertIn("https://niks3.monke.fail/oidc", settings["substituters"]["value"])
 
     def test_github_pull_request_events_fail_before_network_or_worker(self):
