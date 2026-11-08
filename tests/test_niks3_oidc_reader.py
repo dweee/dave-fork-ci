@@ -8,7 +8,9 @@ import json
 import netrc
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
+NIX_BINARY = shutil.which("nix")
 
 
 def load_reader():
@@ -132,7 +135,26 @@ class Niks3OIDCReader(unittest.TestCase):
         os.environ["NIX_USER_CONF_FILES"] = "/fixture/first.conf:/fixture/second.conf"
         self.configure()
         exported = Path(os.environ["GITHUB_ENV"]).read_text()
-        self.assertIn("NIX_USER_CONF_FILES=/fixture/first.conf:/fixture/second.conf:" + str(self.directory / "nix.conf"), exported)
+        self.assertIn("NIX_USER_CONF_FILES=" + str(self.directory / "nix.conf") + ":/fixture/first.conf:/fixture/second.conf", exported)
+
+    def test_existing_config_cannot_shadow_the_job_reader(self):
+        nix = NIX_BINARY
+        if nix is None:
+            self.skipTest("Nix is needed to exercise its actual configuration precedence")
+        previous = self.root / "previous.conf"
+        previous.write_text("netrc-file = " + str(self.root / "managed.netrc") + "\n")
+        os.environ["NIX_USER_CONF_FILES"] = str(previous)
+        self.configure()
+        exported = dict(line.split("=", 1) for line in Path(os.environ["GITHUB_ENV"]).read_text().splitlines())
+        environment = dict(os.environ, NIX_CONF_DIR=str(self.root / "etc"), NIX_CONFIG="",
+                           NIX_USER_CONF_FILES=exported["NIX_USER_CONF_FILES"])
+        # The refresher was mocked during configure; run the real Nix process.
+        self.worker.stop()
+        result = subprocess.run([nix, "config", "show", "--json", "--extra-experimental-features", "nix-command"],
+                                env=environment, capture_output=True, text=True, check=True, timeout=30)
+        settings = json.loads(result.stdout)
+        self.assertEqual(settings["netrc-file"]["value"], str(self.directory / "netrc"))
+        self.assertIn("https://niks3.monke.fail/oidc", settings["substituters"]["value"])
 
     def test_github_pull_request_events_fail_before_network_or_worker(self):
         for event in ("pull_request", "pull_request_target", "workflow_run", "issue_comment"):
