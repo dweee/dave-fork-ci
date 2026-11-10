@@ -23,15 +23,27 @@ class Consolidation(unittest.TestCase):
         current = self.pr(3)
         others = [self.pr(1), self.pr(2, body='manual review'), self.pr(4, base={'ref': 'other'}),
                   self.pr(5, head={'ref': 'automation/input-updates-5', 'repo': {'full_name': 'fork/tool'}})]
-        with patch.object(a, 'api', return_value=[{'filename': 'flake.lock'}]) as api:
-            a.consolidate_input_prs(self.rules, '/repos/owner/tool', others + [current], current)
-        self.assertEqual(api.call_count, 2)
+        def response(rules, method, endpoint, data=None):
+            if '/contents/' in endpoint:
+                return {'type': 'file', 'sha': 'b'*40}
+            if endpoint.endswith('/files?limit=100&per_page=100'):
+                return [{'filename': 'flake.lock'}]
+            if method == 'GET' and endpoint.endswith('/pulls/1'):
+                return dict(others[0], state='open')
+            if method == 'GET' and endpoint.endswith('/pulls/3'):
+                return dict(current, state='open')
+            if method == 'PATCH':
+                return None
+            raise AssertionError('unexpected endpoint')
+        with patch.object(a, 'api', side_effect=response) as api:
+            a.consolidate_input_prs(self.rules, '/repos/owner/tool', others + [current], current, 'a'*40)
+        self.assertEqual(api.call_count, 6)
         self.assertEqual(api.call_args.args, (self.rules, 'PATCH', '/repos/owner/tool/pulls/1', {'state': 'closed'}))
 
     def test_manual_source_fixes_and_truncated_files_are_preserved(self):
         for files in [[{'filename': 'src/lib.rs'}], [{'filename': 'flake.lock'}] * 100, []]:
             with self.subTest(files=len(files)), patch.object(a, 'api', return_value=files) as api:
-                a.consolidate_input_prs(self.rules, '/repos/owner/tool', [self.pr(1)], self.pr(2))
+                a.consolidate_input_prs(self.rules, '/repos/owner/tool', [self.pr(1)], self.pr(2), 'a'*40)
                 self.assertEqual(api.call_count, 1)
 
     def test_missing_checks_are_dispatched_once_on_candidate_branch(self):
