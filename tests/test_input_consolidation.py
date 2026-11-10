@@ -41,7 +41,9 @@ class Consolidation(unittest.TestCase):
         self.assertEqual(api.call_args.args, (self.rules, 'PATCH', '/repos/owner/tool/pulls/1', {'state': 'closed'}))
 
     def test_manual_source_fixes_and_truncated_files_are_preserved(self):
-        for files in [[{'filename': 'src/lib.rs'}], [{'filename': 'flake.lock'}] * 100, []]:
+        for files in [[{'filename': 'src/lib.rs'}], [{'filename': 'flake.lock'}] * 100, [],
+                      [{'filename': 'flake.lock', 'previous_filename': 'settings.json', 'status': 'renamed'}],
+                      [{'filename': 'flake.lock', 'status': 'removed'}]]:
             with self.subTest(files=len(files)), patch.object(a, 'api', return_value=files) as api:
                 a.consolidate_input_prs(self.rules, '/repos/owner/tool', [self.pr(1)], self.pr(2), 'a'*40)
                 self.assertEqual(api.call_count, 1)

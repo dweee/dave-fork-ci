@@ -187,7 +187,7 @@ def open_input_prs(rules, prefix):
 def input_branch_is_pin_only(base, head):
     """Check the complete branch diff, including code within flake.nix."""
     ancestor = channel.run('git', 'merge-base', base, head)
-    names = channel.run('git', 'diff', '--name-only', ancestor, head).splitlines()
+    names = channel.run('git', 'diff', '--no-renames', '--name-only', ancestor, head).splitlines()
     if any(name not in INPUT_FILES for name in names):
         return False
     def contents(revision, path):
@@ -205,6 +205,8 @@ def input_branch_is_pin_only(base, head):
                 text = contents(revision, 'flake.nix').decode('utf-8')
                 for name in sorted(policy['inputs']):
                     match = updater.url_match(text, name)
+                    if any(marker in match.group(1) for marker in ('${', '\\', '\n', '\r')):
+                        raise ValueError('Preserving nonliteral input URL')
                     text = text[:match.start(1)] + '<tracked-pin>' + text[match.end(1):]
                 return text
             if normalized(ancestor) != normalized(head):
@@ -233,7 +235,8 @@ def consolidate_input_prs(rules, prefix, prs, current, replacement_head):
         if not re.fullmatch(r'[a-f0-9]{40}', old_head):
             continue
         files = api(rules, 'GET', prefix + '/pulls/' + str(pr['number']) + '/files?limit=100&per_page=100')
-        if not files or len(files) >= 100 or any(f['filename'] not in INPUT_FILES for f in files):
+        if not files or len(files) >= 100 or any(f['filename'] not in INPUT_FILES or f.get('previous_filename')
+                                                    or f.get('status') in ('renamed', 'removed') for f in files):
             print('Preserving update PR with additional changes: ' + str(pr['number']))
             continue
         equivalent = True

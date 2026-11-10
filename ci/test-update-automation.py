@@ -343,7 +343,8 @@ class FakeForge:
             return None
         if method == 'GET' and endpoint.endswith('/files?limit=100&per_page=100'):
             number = int(endpoint.split('/pulls/')[1].split('/')[0])
-            return [{'filename': f} for p in self.prs if p['number'] == number for f in p['files']]
+            return [f if isinstance(f, dict) else {'filename': f}
+                    for p in self.prs if p['number'] == number for f in p['files']]
         if method == 'GET' and '/contents/' in endpoint:
             path, revision = endpoint.split('/contents/', 1)[1].split('?ref=', 1)
             try:
@@ -511,12 +512,22 @@ class InputUpdatePR(unittest.TestCase):
         base = git(self.work, 'rev-parse', 'HEAD')
         for change, expected in [(text.replace('/old', '/new'), True),
                                  (text.replace('value = 1', 'value = 2'), False),
-                                 (text + '\n', False)]:
+                                 (text + '\n', False),
+                                 (text.replace('/old', '/${revision}'), False),
+                                 (text.replace('/old', '/\\${revision}'), False)]:
             (self.work / 'flake.nix').write_text(change)
             git(self.work, 'commit', '-qam', 'candidate change')
             head = git(self.work, 'rev-parse', 'HEAD')
             with patch.object(a.channel, 'ROOT', self.work):
                 self.assertEqual(a.input_branch_is_pin_only(base, head), expected)
+
+    def test_legacy_rename_does_not_hide_an_unproved_source_deletion(self):
+        self.publish(1)
+        old = self.forge.pr(7, a.LEGACY_INPUT_PREFIX + 'a'*16, sha=self.branch(),
+                            files=({'filename': 'flake.lock', 'previous_filename': 'settings.json',
+                                    'status': 'renamed'},))
+        self.publish(1)
+        self.assertNotIn('state', old)
 
     def test_changed_replacement_head_cannot_authorize_legacy_closure(self):
         self.publish(1)
