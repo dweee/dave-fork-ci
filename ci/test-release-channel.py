@@ -612,4 +612,109 @@ class BuildDependencies(unittest.TestCase):
                                           'private', {}, {}, Path(temporary) / 'outputs', 'build-required-output')
 
 
+class RetainedArchives(unittest.TestCase):
+    def fixture(self, directory):
+        root = Path(directory)
+        cache = root / 'cache'
+        (cache / 'nar').mkdir(parents=True)
+        (cache / 'nix-cache-info').write_text('StoreDir: /nix/store\n')
+        stem = A.removeprefix('/nix/store/').split('-', 1)[0]
+        (cache / (stem + '.narinfo')).write_text('StorePath: ' + A + '\nURL: nar/' + stem + '.nar\n')
+        (cache / 'nar' / (stem + '.nar')).write_bytes(b'fixture data')
+        rules = {'forge': 'github'}
+        value = {'version': 1, 'commit': 'c'*40, 'policy': c.digest(rules),
+                 'system': 'x86_64-linux', 'roots': [A], 'metadata': {A: ENTRY}, 'archivedPaths': [A]}
+        proof = c.digest({'commit': value['commit'], 'policy': value['policy'], 'system': value['system'],
+                          'closure': c.digest({'roots': [A], 'metadata': {A: ENTRY}})})
+        record = {'proofs': {'x86_64-linux': proof}}
+        (root / 'manifest.json').write_text(json.dumps(value))
+        return root, value, rules, record
+
+    def validate(self, root, rules, record):
+        return c.archived_manifest(root, rules, 'c'*40, 'x86_64-linux', record, [A])
+
+    def test_archive_must_reproduce_original_source_and_complete_metadata_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, value, rules, record = self.fixture(directory)
+            expected, origin, paths = self.validate(root, rules, record)
+            self.assertEqual(expected, {A: ENTRY})
+            self.assertEqual(paths, {A})
+            self.assertEqual(origin, (root / 'cache').as_uri())
+            for change in [{'commit': 'd'*40}, {'policy': 'e'*64}, {'roots': [B]},
+                           {'metadata': {A: dict(ENTRY, narSize=99)}},
+                           {'metadata': {A: dict(ENTRY, references=[B])}}]:
+                (root / 'manifest.json').write_text(json.dumps(dict(value, **change)))
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    self.validate(root, rules, record)
+
+    def test_archive_cannot_redirect_to_network_or_escape_its_data_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, value, rules, record = self.fixture(directory)
+            info = next((root / 'cache').glob('*.narinfo'))
+            for url in ['https://example.invalid/private', '../outside.nar', '/absolute.nar']:
+                info.write_text('URL: ' + url + '\n')
+                with self.subTest(url=url), self.assertRaises(ValueError):
+                    self.validate(root, rules, record)
+            info.write_text('URL: nar/' + 'a'*32 + '.nar\n')
+            nar = root / 'cache/nar' / ('a'*32 + '.nar')
+            nar.unlink()
+            nar.symlink_to('/etc/passwd')
+            with self.assertRaises(ValueError):
+                self.validate(root, rules, record)
+
+    def test_archive_variants_still_read_nar_contents_and_require_the_legacy_signature(self):
+        origin = 'file:///fixture/cache'
+        with patch.object(c, 'info', return_value={A: ENTRY}) as info, \
+                patch.object(c, 'run', return_value='') as run:
+            proof = c.verify([A], {A: ENTRY}, {}, archived_cache=origin, archived_paths={A})
+        self.assertEqual(proof, c.digest({'roots': [A], 'metadata': {A: ENTRY}}))
+        self.assertTrue(all(call.args[2] == origin for call in info.call_args_list))
+        self.assertIn('--sigs-needed', run.call_args.args)
+        self.assertNotIn('--no-contents', run.call_args.args)
+        self.assertIn(c.LEGACY_KEY, run.call_args.kwargs['env']['NIX_CONFIG'])
+        # A signed alternate variant must still match the original metadata.
+        with patch.object(c, 'info', return_value={A: dict(ENTRY, narSize=99)}), \
+                patch.object(c, 'run', return_value=''):
+            with self.assertRaises(ValueError):
+                c.verify([A], {A: ENTRY}, {}, archived_cache=origin, archived_paths={A})
+
+    def test_canonical_variants_cannot_be_adopted_during_archived_retention(self):
+        with patch.object(c, 'info', return_value={A: dict(ENTRY, narSize=99)}), \
+                patch.object(c, 'run', return_value=''):
+            with self.assertRaises(ValueError):
+                c.verify([A], {A: ENTRY}, {}, archived_cache='file:///fixture/cache', archived_paths={B})
+
+    def test_original_signer_is_not_enabled_for_canonical_cache_reads(self):
+        expected = {A: dict(ENTRY, references=[B]), B: ENTRY}
+        def info(paths, env, origin):
+            return {paths[0]: expected[paths[0]]}
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', return_value='') as run:
+            c.verify([A], expected, {}, archived_cache='file:///fixture/cache', archived_paths={A})
+        settings = {call.args[-1]: call.kwargs['env']['NIX_CONFIG'] for call in run.call_args_list}
+        self.assertIn(c.LEGACY_KEY, settings[A])
+        self.assertNotIn(c.LEGACY_KEY, settings[B])
+
+    def test_archive_nar_is_read_freshly_before_importing_and_validating_it(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(c, 'ROOT', Path(directory)):
+            (Path(directory) / 'ci').mkdir()
+            archive = A + '-archive'
+            selection = {'version': 1, 'releases': {'c'*40: {'x86_64-linux': archive}}}
+            (Path(directory) / 'ci/retained-archives.json').write_text(json.dumps(selection))
+            with patch.object(c, 'run', return_value='') as run, \
+                    patch.object(c, 'archived_manifest', return_value='validated'):
+                self.assertEqual(c.retained_archive({}, 'c'*40, 'x86_64-linux', {}, [A], {}), 'validated')
+            self.assertEqual(run.call_args_list[0].args,
+                             ('nix', 'store', 'verify', '--store', c.CACHE, '--sigs-needed', '1', archive))
+            self.assertEqual(run.call_args_list[1].args, ('nix', 'copy', '--from', c.CACHE, archive))
+
+    def test_archive_selection_is_absent_by_default_and_rejects_non_store_paths(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(c, 'ROOT', Path(directory)):
+            self.assertIsNone(c.retained_archive({}, 'c'*40, 'x86_64-linux', {}, [A], {}))
+            (Path(directory) / 'ci').mkdir()
+            selection = {'version': 1, 'releases': {'c'*40: {'x86_64-linux': '/tmp/untrusted'}}}
+            (Path(directory) / 'ci/retained-archives.json').write_text(json.dumps(selection))
+            with self.assertRaises(ValueError):
+                c.retained_archive({}, 'c'*40, 'x86_64-linux', {}, [A], {})
+
+
 if __name__ == '__main__': unittest.main()
