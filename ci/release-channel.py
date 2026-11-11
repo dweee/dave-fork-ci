@@ -48,6 +48,7 @@ CACHE = 'https://niks3.monke.fail' + ('/oidc' if json.loads((ROOT/'ci/channels.j
 KEY = 'niks3.monke.fail-1:q13GqiZgAxx7SyoLZInXoJjviZMOdNpfG03xs0VUD2M='
 UPSTREAM = 'https://cache.nixos.org'
 UPSTREAM_KEY = 'cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY='
+LEGACY_KEY = 'flakey:mDx4DiNpH5w1Pl8OAKFFWq1ZsypA9lbaFKNiRWhqYE8='
 STORE = re.compile(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/\s]+')
 SHA = re.compile(r'[a-f0-9]{40}')
 FLAGS = ['--option', 'accept-flake-config', 'false', '--no-update-lock-file', '--no-write-lock-file']
@@ -306,7 +307,7 @@ def remote_env(env, directory):
                 'http2 = ' + ('true' if os.environ.get('ATTIC_HTTP2') == 'true' else 'false') + '\n')
 
 
-def verify(roots, expected, env):
+def verify(roots, expected, env, archived_cache=None, archived_paths=()):
     if not roots or not expected or not set(roots) <= set(expected):
         raise ValueError('Missing required output')
     if any(not STORE.fullmatch(p) or p.endswith('.drv') for p in expected):
@@ -321,9 +322,17 @@ def verify(roots, expected, env):
     with tempfile.TemporaryDirectory(prefix='channel-read-') as directory:
         reader = remote_env(env, directory)
         for path, entry in list(expected.items()):
-            for origin in ([CACHE] if path in roots else [CACHE, UPSTREAM]):
+            candidates = ([archived_cache] if path in archived_paths else
+                          [CACHE] if path in roots else [CACHE, UPSTREAM])
+            for origin in candidates:
+                selected_reader = reader
+                if origin == archived_cache:
+                    # The archive itself was freshly verified/copied from Niks3.
+                    # Only its exact historical NARs may use the original signer.
+                    selected_reader = dict(reader, NIX_CONFIG=reader['NIX_CONFIG'] +
+                                           '\ntrusted-public-keys = ' + KEY + ' ' + UPSTREAM_KEY + ' ' + LEGACY_KEY + '\n')
                 try:
-                    remote = info([path], reader, origin)
+                    remote = info([path], selected_reader, origin)
                 except RuntimeError:
                     if origin == UPSTREAM or path in roots:
                         raise
@@ -338,7 +347,7 @@ def verify(roots, expected, env):
                     # signed cached copy only when its references match, then
                     # read and verify its bytes like any other member. Both
                     # metadata digests are logged.
-                    adopt = origin == CACHE and actual['references'] == entry['references']
+                    adopt = archived_cache is None and origin == CACHE and actual['references'] == entry['references']
                     report_metadata_difference(path, roots, origin, entry, actual,
                                                action='adopted' if adopt else 'rejected')
                     if not adopt:
@@ -347,7 +356,7 @@ def verify(roots, expected, env):
                     adopted.append(path)
                 # Reads NAR bytes, verifies hash and signature; no --no-contents,
                 # local-store fallback, source build or metadata-only success.
-                run('nix', 'store', 'verify', '--store', origin, '--sigs-needed', '1', path, env=reader)
+                run('nix', 'store', 'verify', '--store', origin, '--sigs-needed', '1', path, env=selected_reader)
                 origins[path] = origin
                 break
             if path not in origins:
@@ -398,6 +407,85 @@ def remote_closure(roots, env):
     return expected
 
 
+def archived_manifest(directory, rules, sha, system, record, roots):
+    """Validate data-only historical variants against the original immutable proof."""
+    directory = Path(directory)
+    manifest = directory / 'manifest.json'
+    if (manifest.is_symlink() or not manifest.is_file() or manifest.stat().st_size > 32*1024*1024):
+        raise ValueError('Invalid retained archive manifest')
+    value = json.loads(manifest.read_text())
+    if (value.get('version') != 1 or value.get('commit') != sha
+            or value.get('policy') != digest(rules) or value.get('system') != system
+            or value.get('roots') != sorted(roots)):
+        raise ValueError('Retained archive source/policy/roots differ')
+    raw = value.get('metadata')
+    if not isinstance(raw, dict) or not raw or len(raw) > 50000:
+        raise ValueError('Invalid retained archive metadata')
+    if any(not isinstance(p, str) or not STORE.fullmatch(p) or p.endswith('.drv') for p in raw):
+        raise ValueError('Invalid retained archive store path')
+    expected = {p: metadata(e) for p, e in raw.items()}
+    if (not set(roots) <= set(expected)
+            or any(ref not in expected for e in expected.values() for ref in e['references'])):
+        raise ValueError('Incomplete retained archive closure')
+    closure = digest({'roots': sorted(roots), 'metadata': expected})
+    proof = digest({'commit': sha, 'policy': digest(rules), 'system': system, 'closure': closure})
+    if proof != record['proofs'].get(system):
+        raise ValueError('Retained archive differs from original build proof')
+    paths = value.get('archivedPaths')
+    if (not isinstance(paths, list) or not paths or any(not isinstance(p, str) for p in paths)
+            or len(paths) != len(set(paths))
+            or not set(paths) <= set(expected)):
+        raise ValueError('Invalid retained archive variant selection')
+    cache = directory / 'cache'
+    if cache.is_symlink() or not cache.is_dir():
+        raise ValueError('Invalid retained archive cache')
+    cache_info = cache / 'nix-cache-info'
+    if (cache_info.is_symlink() or not cache_info.is_file() or cache_info.stat().st_size > 65536
+            or 'StoreDir: /nix/store' not in cache_info.read_text().splitlines()):
+        raise ValueError('Invalid retained archive store directory')
+    names = {p.removeprefix('/nix/store/').split('-', 1)[0] + '.narinfo' for p in paths}
+    if {p.name for p in cache.glob('*.narinfo')} != names:
+        raise ValueError('Retained archive has unselected narinfos')
+    for path in paths:
+        stem = path.removeprefix('/nix/store/').split('-', 1)[0]
+        narinfo = cache / (stem + '.narinfo')
+        nar = cache / 'nar' / (stem + '.nar')
+        if (narinfo.is_symlink() or not narinfo.is_file() or narinfo.stat().st_size > 1024*1024
+                or nar.is_symlink() or not nar.is_file()
+                or nar.resolve().parent != cache.resolve() / 'nar'):
+            raise ValueError('Invalid retained archive payload')
+        urls = [line[5:] for line in narinfo.read_text().splitlines() if line.startswith('URL: ')]
+        if urls != ['nar/' + stem + '.nar']:
+            raise ValueError('Retained archive NAR must stay in its data directory')
+    return expected, cache.as_uri(), set(paths)
+
+
+def retained_archive(rules, sha, system, record, roots, env):
+    config = ROOT / 'ci/retained-archives.json'
+    if not config.exists():
+        return None
+    if config.stat().st_size > 1024*1024:
+        raise ValueError('Oversize retained archive selection')
+    value = json.loads(config.read_text())
+    if value.get('version') != 1 or not isinstance(value.get('releases'), dict):
+        raise ValueError('Invalid retained archive selection')
+    selected = value['releases'].get(sha, {})
+    if not isinstance(selected, dict):
+        raise ValueError('Invalid retained archive platform selection')
+    path = selected.get(system)
+    if path is None:
+        return None
+    if not isinstance(path, str) or not STORE.fullmatch(path) or path.endswith('.drv'):
+        raise ValueError('Invalid retained archive store path')
+    phase('read-retained-archive')
+    with tempfile.TemporaryDirectory(prefix='retained-archive-read-') as directory:
+        reader = remote_env(env, directory)
+        # Always read the outer archive NAR, even when a previous job imported it.
+        run('nix', 'store', 'verify', '--store', CACHE, '--sigs-needed', '1', path, env=reader)
+        run('nix', 'copy', '--from', CACHE, path, env=reader)
+    return archived_manifest(path, rules, sha, system, record, roots)
+
+
 def evaluated_roots(rules, system, flake=None, expression=None, env=None):
     targets = rules['targets'][system]
     selected = ' '.join('f.' + t['attribute'] for t in targets)
@@ -425,10 +513,12 @@ def audit(rules, sha, system, record, env, flake=None, expression=None):
         raise ValueError('Release source/policy differs from immutable proof')
     phase('evaluate-retained-roots')
     roots = evaluated_roots(rules, system, flake, expression, env)
+    archive = retained_archive(rules, sha, system, record, roots, env)
     phase('discover-retained-closure')
-    expected = remote_closure(roots, env)
+    expected = archive[0] if archive else remote_closure(roots, env)
     phase('verify-retained-cache')
-    closure = verify(roots, expected, env)
+    closure = (verify(roots, expected, env, archived_cache=archive[1], archived_paths=archive[2])
+               if archive else verify(roots, expected, env))
     phase('compare-retained-proof')
     proof = digest({'commit': sha, 'policy': digest(rules), 'system': system, 'closure': closure})
     if record['proofs'].get(system) != proof:
