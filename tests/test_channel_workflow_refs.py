@@ -38,6 +38,17 @@ class ChannelWorkflowRefs(unittest.TestCase):
         return {name: json.loads((folder / (name + '.yml')).read_text().split('\n', 1)[1])
                 for name in names if (folder / (name + '.yml')).exists()}
 
+    def test_install_initializes_monitor_config_and_preserves_existing_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.generated('forgejo', directory)
+            path = Path(directory) / 'ci/update-monitor.json'
+            self.assertEqual(json.loads(path.read_text()),
+                             {'version': 1, 'checks': [], 'exclude': [], 'upstreams': []})
+            existing = '{"checks": [["python3", "check-version.py"]], "exclude": ["vendor/"]}\n'
+            path.write_text(existing)
+            self.generated('forgejo', directory)
+            self.assertEqual(path.read_text(), existing)
+
     def test_forgejo_determinate_policy_rejects_unsafe_settings(self):
         invalid = [
             ('forgejo', {'forgejoDeterminateImage': 'nixos/nix:latest', 'forgejoDeterminateLabels': ['nix']}),

@@ -164,6 +164,11 @@ def install(args):
                   remote=('https://github.com/' if github else 'https://git.monke.fail/')+args.repository+'.git')
     ci = root / 'ci'
     ci.mkdir(exist_ok=True)
+    # A newly onboarded tool may have no custom monitor configuration yet.
+    # The scanner still reports tracked pins and unclassified sources.
+    monitor = ci / 'update-monitor.json'
+    if not monitor.exists():
+        monitor.write_text(json.dumps({'version': 1, 'checks': [], 'exclude': [], 'upstreams': []}, indent=2)+'\n')
     for name in HELPERS:
         if ci / name != HERE / name:
             shutil.copy2(HERE / name, ci / name)
