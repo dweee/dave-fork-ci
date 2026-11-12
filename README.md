@@ -130,3 +130,13 @@ running the installer without the flag does not create a publication manifest.
 Private Darwin jobs recheck host admission after graph evaluation. Publication
 and credential cleanup disable source builds, so they can finish after the
 host's build window closes. Read-only release-retention jobs gain no publisher.
+
+### Native runner selection
+
+A policy matrix row may set `"runner": "xcode-27"` for `aarch64-darwin`
+when its owner requires the maintained macOS 27 / Xcode 27 route (for example,
+Pared). Omitting the field preserves the existing platform defaults. The
+controller accepts only its explicit per-platform route allowlist; arbitrary
+labels, expressions and cross-platform overrides fail before preparation.
+A label does not prove the toolchain version: retain the owning package's
+native OS/SDK checks and treat an unavailable matching runner as pending.
