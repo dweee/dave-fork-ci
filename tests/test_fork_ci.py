@@ -20,6 +20,34 @@ POLICY = {'version': 1, 'upstream': 'example/project', 'branch': 'main', 'track'
           'matrix': [{'system': 'x86_64-linux', 'packages': ['default'], 'checks': [], 'tests': []}]}
 
 
+
+class NativeRunnerPolicyTests(unittest.TestCase):
+    def test_existing_platform_defaults_are_unchanged(self):
+        for system, expected in ci.RUNNERS.items():
+            with self.subTest(system=system):
+                self.assertEqual(ci.policy_runner({'system': system}), expected)
+
+    def test_pared_can_select_its_maintained_xcode_27_route(self):
+        policy = copy.deepcopy(POLICY)
+        policy['matrix'] = [{'system': 'aarch64-darwin', 'runner': 'xcode-27',
+                             'packages': ['pared'], 'checks': [], 'tests': []}]
+        self.assertEqual(ci.validate_policy(policy), policy)
+        self.assertEqual(ci.policy_runner(policy['matrix'][0]), 'xcode-27')
+
+    def test_arbitrary_or_cross_platform_runner_overrides_fail_closed(self):
+        for system, runner in [('aarch64-darwin', 'self-hosted'),
+                               ('aarch64-darwin', ['self-hosted', 'xcode-27']),
+                               ('aarch64-darwin', '${{ secrets.RUNNER }}'),
+                               ('x86_64-linux', 'xcode-27'),
+                               ('aarch64-linux', 'macos-15'),
+                               ('aarch64-darwin', None)]:
+            with self.subTest(system=system, runner=runner):
+                policy = copy.deepcopy(POLICY)
+                policy['matrix'][0].update(system=system, runner=runner)
+                with self.assertRaises(ci.Blocked):
+                    ci.validate_policy(policy)
+
+
 class MergeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

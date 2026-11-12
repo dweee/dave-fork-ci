@@ -20,6 +20,9 @@ REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 ATTR = re.compile(r"[A-Za-z0-9_+-]+(?:\.[A-Za-z0-9_+-]+)*")
 RUNNERS = {'aarch64-darwin': 'macos-15', 'x86_64-linux': 'ubuntu-24.04',
            'aarch64-linux': 'ubuntu-24.04-arm'}
+# Only existing reviewed native routes may override the platform default.
+RUNNER_CHOICES = {system: {runner} for system, runner in RUNNERS.items()}
+RUNNER_CHOICES['aarch64-darwin'].add('xcode-27')
 PROTECTED = ['.github', '.github/**', '.forgejo', '.forgejo/**', '.gitmodules',
              '.fork-ci.json', '.fork-ci', '.fork-ci/**']
 STATE = '.fork-ci/upstream-state.json'
@@ -59,6 +62,14 @@ def ref(value):
     return value
 
 
+def policy_runner(row):
+    system = row.get('system')
+    selected = row.get('runner', RUNNERS.get(system))
+    if not isinstance(selected, str) or selected not in RUNNER_CHOICES.get(system, set()):
+        raise Blocked('Runner must be an approved route for the selected native platform')
+    return selected
+
+
 def validate_policy(policy):
     if policy.get('version') != 1 or not REPO.fullmatch(policy.get('upstream', '')):
         raise Blocked('Policy version/upstream must identify a public GitHub repository')
@@ -75,6 +86,7 @@ def validate_policy(policy):
     for row in matrix:
         if row.get('system') not in RUNNERS or not row.get('packages'):
             raise Blocked('Unsupported platform or empty package list')
+        policy_runner(row)
         if not all(isinstance(a, str) and ATTR.fullmatch(a)
                    for a in row['packages'] + row.get('checks', [])):
             raise Blocked('Package/check names must be plain flake attribute paths')
@@ -321,7 +333,7 @@ def prepare(args):
     branch = 'sync/upstream/' + candidate
     push(repo, url, candidate, 'refs/heads/' + branch, expected='')
     emit({'changed': 'true', 'base': base, 'candidate': candidate, 'candidate_branch': branch,
-          'matrix': {'include': [{'system': r['system'], 'runner': RUNNERS[r['system']]}
+          'matrix': {'include': [{'system': r['system'], 'runner': policy_runner(r)}
                                  for r in policy['matrix']]}})
 
 
