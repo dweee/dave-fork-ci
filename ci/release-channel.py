@@ -5,6 +5,7 @@ Managed source: dave-fork-ci/ci/release-channel.py. No activation or deletion.
 Only the promote command has forge write credentials.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import importlib.util
@@ -80,13 +81,13 @@ def failure_category(diagnostic):
         ('cache-integrity', r'nar.*hash mismatch|corrupted path|invalid nar'),
         ('cache-metadata-mismatch', r'published metadata differs|publication changed'),
         ('cache-missing-output', r'incomplete cache publication|required cache output is missing'),
-        ('cache-signature', r'lacks a signature|is not signed|invalid signature|no trusted signature'),
+        ('cache-signature', r'lacks a signature|is not signed|invalid signature|no trusted signature|is untrusted'),
         ('authorization', r'HTTP[^\n]*(?:401|403)|unauthorized|forbidden|authentication failed'),
         ('daemon-unavailable', r"remote store 'daemon'|cannot connect to socket|daemon-socket"),
         ('transport', r'unexpected eof|http/2|framing|connection reset|timed out|timeout|internalservererror|HTTP[^\n]*50[0-9]|'
                       r'could not resolve host|resolving timed out|temporary failure in name resolution|connection refused|'
                       r'couldn.t connect|failed to connect|ssl connect error|partial file|transfer closed'),
-        ('missing-input-or-output', r'HTTP[^\n]*404|does not exist|no such file'),
+        ('missing-input-or-output', r'HTTP[^\n]*404|does not exist|no such file|is not valid'),
         ('evaluation', r'evaluation aborted|attribute[^\n]*missing|syntax error|infinite recursion|assertion'),
         ('build', r'builder for[^\n]*failed|ninja[^\n]*stopped|failed with exit code'),
     ]
@@ -379,6 +380,117 @@ def verify(roots, expected, env, archived_cache=None, archived_paths=()):
     return digest({'roots': sorted(roots), 'metadata': expected})
 
 
+# Promotion reads narinfo metadata only. Lookups run in parallel batches; a
+# batch that contains a missing path is split until the missing path is found.
+METADATA_WORKERS = 16
+METADATA_BATCH = 32
+SIGNATURE_BATCH = 400
+
+
+def batches(values, size):
+    values = sorted(values)
+    return [values[index:index+size] for index in range(0, len(values), size)]
+
+
+def origin_reader(reader, origin):
+    """Each origin must sign its own copies with its own key and no other."""
+    key = KEY if origin == CACHE else UPSTREAM_KEY
+    return dict(reader, NIX_CONFIG=reader['NIX_CONFIG'] + '\ntrusted-public-keys = ' + key + '\n')
+
+
+def published_metadata(paths, origin, reader):
+    """Narinfo metadata the origin serves for paths; None marks a missing path."""
+    def lookup(batch):
+        try:
+            found = info(batch, reader, origin)
+        except CommandFailure as error:
+            if error.category != 'missing-input-or-output':
+                raise
+            if len(batch) == 1:
+                return {batch[0]: None}
+            middle = len(batch) // 2
+            return {**lookup(batch[:middle]), **lookup(batch[middle:])}
+        if set(found) != set(batch):
+            raise ValueError('Invalid remote metadata response')
+        return {path: (None if entry is None else metadata(entry)) for path, entry in found.items()}
+    result = {}
+    with ThreadPoolExecutor(max_workers=METADATA_WORKERS) as pool:
+        for part in pool.map(lookup, batches(paths, METADATA_BATCH)):
+            result.update(part)
+    return result
+
+
+def verify_signatures(paths, origin, reader):
+    """Check narinfo signatures against the origin's key without reading NARs."""
+    for batch in batches(paths, SIGNATURE_BATCH):
+        run('nix', 'store', 'verify', '--store', origin, '--no-contents', '--sigs-needed', '1', *batch, env=reader)
+
+
+def verify_published(roots, expected, env):
+    """Promotion gate: every closure path is published, signed and matches the build.
+
+    Roots must be served by Niks3 with the Niks3 signature. Other paths may come
+    from Niks3 (Niks3 signature) or, when Niks3 omitted them, from the official
+    upstream cache (upstream signature). Metadata (narHash, narSize, references)
+    must equal the build, which the signature binds. NAR bytes are not read
+    here; the daily retention audit reads them. Returns the same closure digest
+    as verify(), so existing proofs and audits stay comparable.
+    """
+    if not roots or not expected or not set(roots) <= set(expected):
+        raise ValueError('Missing required output')
+    if any(not STORE.fullmatch(p) or p.endswith('.drv') for p in expected):
+        raise ValueError('Invalid closure path')
+    expected = {p: metadata(e) for p, e in expected.items()}
+    if any(ref not in expected for e in expected.values() for ref in e['references']):
+        raise ValueError('Incomplete closure')
+    adopted = []
+    with tempfile.TemporaryDirectory(prefix='channel-metadata-') as directory:
+        base = remote_env(env, directory)
+        published = {}
+        remaining = set(expected)
+        for origin in [CACHE, UPSTREAM]:
+            if not remaining:
+                break
+            reader = origin_reader(base, origin)
+            found = published_metadata(remaining, origin, reader)
+            missing = {p for p, entry in found.items() if entry is None}
+            if origin == CACHE and missing & set(roots):
+                raise ValueError('Required cache output is missing')
+            present = set(found) - missing
+            for path in sorted(present):
+                actual = found[path]
+                if actual != expected[path]:
+                    # Same adoption rule as verify(): another publisher already
+                    # holds a signed build of this input-addressed path with the
+                    # same references. Its metadata enters the proof.
+                    adopt = origin == CACHE and actual['references'] == expected[path]['references']
+                    report_metadata_difference(path, roots, origin, expected[path], actual,
+                                               action='adopted' if adopt else 'rejected')
+                    if not adopt:
+                        raise ValueError('Published metadata differs from build')
+                    expected[path] = actual
+                    adopted.append(path)
+            if present:
+                verify_signatures(present, origin, reader)
+            published.update({p: origin for p in present})
+            remaining = missing
+        if remaining:
+            raise ValueError('Incomplete cache publication')
+    counts = {name: sum(1 for o in published.values() if o == origin)
+              for name, origin in [('niks3', CACHE), ('upstream', UPSTREAM)]}
+    message = ('Verified signed narinfo metadata for ' + str(len(published)) + ' closure paths ('
+               + str(counts['niks3']) + ' Niks3, ' + str(counts['upstream']) + ' upstream); NAR bytes are '
+               'audited by the scheduled retention run.')
+    if adopted:
+        message += (f' Adopted {len(adopted)} existing signed cache realisation(s) whose metadata '
+                    'differs from this non-reproducible build.')
+    print(message, flush=True)
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+            summary.write(message + '\n')
+    return digest({'roots': sorted(roots), 'metadata': expected})
+
+
 def remote_closure(roots, env):
     """Discover signed remote metadata without realising or building outputs."""
     expected = {}
@@ -535,8 +647,13 @@ def audit(rules, sha, system, record, env, flake=None, expression=None):
     return {'commit': sha, 'system': system, 'policy': digest(rules), 'proof': proof, 'roots': roots}
 
 
-def release_refs(rules):
-    """Advertised channels plus three recent releases per channel; no deletion."""
+def release_ledger(rules):
+    """Advertised channels plus three recent releases per channel; no deletion.
+
+    Returns ({sha: immutable tag record}, {role: sha}). Roles are `tested` and
+    `stable` (the advertised pointers) and `<channel>-recent-<n>` for the n-th
+    newest immutable tag of that channel.
+    """
     token = os.environ.get('SOURCE_TOKEN') or os.environ.get('CHANNEL_TOKEN')
     if rules['forge'] == 'forgejo' and not token:
         raise ValueError('A repository read credential is required')
@@ -550,11 +667,16 @@ def release_refs(rules):
             'refs/tags/tested-*:refs/tags/tested-*', 'refs/tags/stable-*:refs/tags/stable-*', env=env)
         names = run(*git, 'for-each-ref', '--sort=-creatordate', '--format=%(refname)', 'refs/tags').splitlines()
         selected = set()
+        roles = {}
         for channel in ['tested', 'stable']:
-            selected.update([n for n in names if n.startswith('refs/tags/'+channel+'-')][:3])
+            recent = [n for n in names if n.startswith('refs/tags/'+channel+'-')][:3]
+            selected.update(recent)
+            for number, name in enumerate(recent, 1):
+                roles[channel+'-recent-'+str(number)] = name.rsplit('-', 1)[-1]
             pointer = run('git', '-c', 'credential.helper=', 'ls-remote', rules['remote'], 'refs/heads/'+channel, env=env)
             if pointer:
                 selected.add('refs/tags/'+channel+'-'+pointer.split()[0])
+                roles[channel] = pointer.split()[0]
         result = {}
         for name in sorted(selected):
             sha = name.rsplit('-', 1)[-1]
@@ -563,7 +685,74 @@ def release_refs(rules):
             raw = run(*git, 'cat-file', 'tag', name)
             record = json.loads(raw.split('\n\n', 1)[1])
             result[sha] = record
-        return result
+        if any(sha not in result for sha in roles.values()):
+            raise ValueError('Advertised channel has no immutable release tag')
+        return result, roles
+
+
+def release_refs(rules):
+    return release_ledger(rules)[0]
+
+
+# Niks3 garbage-collects closures that were not pushed within its retention
+# window unless a pin names them. Each release records one small manifest per
+# system whose references are exactly its roots. Pins are upserted, never
+# deleted, under fixed role names, so the pinned set stays bounded: the
+# candidate being built plus the advertised and recent recovery releases.
+MANIFEST = re.compile(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-release-roots')
+PIN_ROLES = ['tested', 'stable'] + [c + '-recent-' + str(n) for c in ['tested', 'stable'] for n in (1, 2, 3)]
+
+
+def pin_name(rules, system, role):
+    if role not in PIN_ROLES + ['candidate'] or system not in {'x86_64-linux', 'aarch64-linux', 'aarch64-darwin', 'x86_64-darwin'}:
+        raise ValueError('Invalid retention pin')
+    return rules['repository'].replace('/', '-') + '.' + system + '.' + role
+
+
+def release_manifest(roots, env):
+    """A store path whose references are the release roots; nothing is built."""
+    if not roots or any(not STORE.fullmatch(p) or p.endswith('.drv') for p in roots):
+        raise ValueError('Invalid release roots')
+    expression = ('builtins.toFile "release-roots" (builtins.concatStringsSep "\\n" '
+                  '(map builtins.storePath (builtins.fromJSON ' + json.dumps(json.dumps(sorted(roots))) + ')) + "\\n")')
+    path = run('nix', 'eval', '--impure', '--raw', '--expr', expression, *NO_BUILD, env=env)
+    if not MANIFEST.fullmatch(path):
+        raise ValueError('Invalid release manifest')
+    return path
+
+
+def retention_pins(rules, system, records, roles):
+    """Role pin name -> recorded manifest; releases from before manifests are skipped."""
+    pins = {}
+    for role, sha in sorted(roles.items()):
+        manifest = (records.get(sha, {}).get('retention') or {}).get(system)
+        if manifest is None:
+            print('Release for retention role ' + role + ' predates retention manifests; '
+                  'Niks3 keeps it only for its push-age window', flush=True)
+            continue
+        if not isinstance(manifest, str) or not MANIFEST.fullmatch(manifest):
+            raise ValueError('Invalid recorded retention manifest')
+        pins[pin_name(rules, system, role)] = manifest
+    return pins
+
+
+def pin_release(rules, system, roots, env, publish_env, directory):
+    """Re-pin the recovery releases, then pin this candidate. Returns its manifest."""
+    phase('read-release-ledgers')
+    records, roles = release_ledger(rules)
+    pins = retention_pins(rules, system, records, roles)
+    if pins:
+        phase('pin-recovery-releases')
+        selection = Path(directory) / 'pins.json'
+        selection.write_text(json.dumps(pins, sort_keys=True))
+        run(sys.executable, str(ROOT / 'ci/push-niks3.py'), '--pins', str(selection), env=publish_env)
+    phase('pin-release-candidate')
+    manifest = release_manifest(roots, env)
+    outputs = Path(directory) / 'manifest.txt'
+    outputs.write_text(manifest + '\n')
+    run(sys.executable, str(ROOT / 'ci/push-niks3.py'), '--outputs', str(outputs),
+        '--pin', pin_name(rules, system, 'candidate'), env=publish_env)
+    return manifest
 
 
 def retain(system):
@@ -827,16 +1016,17 @@ def build(system):
         phase('inspect-built-closure')
         if not roots or not expected or not set(roots) <= set(expected):
             raise ValueError('Missing built output closure')
-        phase('verify-remote-cache')
-        proof = verify(roots, expected, env)
+        phase('verify-published-metadata')
+        proof = verify_published(roots, expected, env)
+        manifest = pin_release(rules, system, roots, env, publish_env, directory)
         phase('record-release-proof')
         if source() != sha:
             raise ValueError('Source changed during release')
         receipt = digest({'commit': sha, 'policy': digest(rules), 'system': system, 'closure': proof})
         if os.environ.get('GITHUB_OUTPUT'):
             with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-                stream.write('proof=' + receipt + '\n')
-        print('Required builds, checks, upload and independent cache reads passed for ' + system)
+                stream.write('proof=' + receipt + '\nretention=' + manifest + '\n')
+        print('Required builds, checks, upload and signed cache metadata passed for ' + system)
 
 
 def git_env(directory):
@@ -852,12 +1042,17 @@ def git_env(directory):
                 GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
 
 
-def promote(channel, revision, proofs):
+def promote(channel, revision, proofs, retention=None):
     rules = policy()
     if channel not in {'tested', 'stable'} or not SHA.fullmatch(revision):
         raise ValueError('Invalid release selection')
     if set(proofs) != (set(rules['targets']) | set(rules.get('cacheOnlySystems', []))) or any(not re.fullmatch(r'[a-f0-9]{64}', p) for p in proofs.values()):
         raise ValueError('Missing required system proof')
+    # Retention manifests are recorded so later builds can keep this release
+    # pinned in Niks3 while it is advertised or in the recent recovery set.
+    retention = {k: v for k, v in (retention or {}).items() if v}
+    if not set(retention) <= set(proofs) or any(not isinstance(v, str) or not MANIFEST.fullmatch(v) for v in retention.values()):
+        raise ValueError('Invalid retention manifest')
     url = rules['remote']
     if url not in {'https://github.com/' + rules['repository'] + '.git',
                    'https://git.monke.fail/' + rules['repository'] + '.git'}:
@@ -877,8 +1072,11 @@ def promote(channel, revision, proofs):
         # Normal non-forced branch updates provide an ancestry/race check on the
         # server. Both immutable tag and channel move together or neither does.
         tag = channel + '-' + revision
-        message = json.dumps({'version': 1, 'commit': revision, 'policy': digest(rules),
-                              'proofs': proofs, 'activationAuthorized': False}, sort_keys=True)
+        record = {'version': 1, 'commit': revision, 'policy': digest(rules),
+                  'proofs': proofs, 'activationAuthorized': False}
+        if retention:
+            record['retention'] = retention
+        message = json.dumps(record, sort_keys=True)
         existing = run(*args, 'ls-remote', url, 'refs/tags/' + tag + '^{}', env=env)
         if existing:
             if existing.split()[0] != revision:
@@ -898,6 +1096,7 @@ def main():
     parser.add_argument('--channel', choices=['tested', 'stable'], default='tested')
     parser.add_argument('--revision')
     parser.add_argument('--proofs', default='{}')
+    parser.add_argument('--retention', default='{}')
     args = parser.parse_args()
     try:
         if args.action == 'daemon':
@@ -906,7 +1105,7 @@ def main():
             ensure_daemon()
             build(args.system)
         elif args.action == 'promote':
-            promote(args.channel, args.revision, json.loads(args.proofs))
+            promote(args.channel, args.revision, json.loads(args.proofs), json.loads(args.retention))
         elif args.action == 'retain':
             ensure_daemon()
             retain(args.system)

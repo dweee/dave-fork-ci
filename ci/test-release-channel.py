@@ -435,6 +435,39 @@ class RealCache(unittest.TestCase):
                 with self.assertRaises(RuntimeError): c.verify([path], expected, dict(c.os.environ))
                 self.assertIn(path, c.info([path], dict(c.os.environ)))
 
+    def test_promotion_gate_reads_signed_metadata_and_leaves_nar_bytes_to_the_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root/'artifact'
+            artifact.write_text('Release channel metadata fixture; no compiler or production credential\n')
+            path = c.run('nix', 'store', 'add-path', str(artifact))
+            c.run('nix-store', '--generate-binary-cache-key', 'channel-fixture', str(root/'secret'), str(root/'public'))
+            c.run('nix', 'store', 'sign', '--key-file', str(root/'secret'), path)
+            cache = (root/'cache').as_uri()
+            c.run('nix', 'copy', '--to', cache, path)
+            narinfo = next((root/'cache').glob('*.narinfo'))
+            signed = '\n'.join(line for line in narinfo.read_text().splitlines() if not line.startswith('CA:'))+'\n'
+            narinfo.write_text(signed)
+            expected = c.info([path], dict(c.os.environ))
+            with patch.object(c, 'CACHE', cache), patch.object(c, 'KEY', (root/'public').read_text().strip()):
+                full = c.verify([path], expected, dict(c.os.environ))
+                self.assertEqual(c.verify_published([path], expected, dict(c.os.environ)), full)
+                narinfo.write_text('\n'.join(line for line in signed.splitlines() if not line.startswith('Sig:'))+'\n')
+                with self.assertRaises(RuntimeError): c.verify_published([path], expected, dict(c.os.environ))
+                narinfo.write_text(signed)
+                nar = next((root/'cache/nar').iterdir())
+                nar.write_bytes(b'truncated NAR')
+                # Honest scope: a corrupt NAR behind valid signed metadata passes
+                # promotion; the scheduled content audit (verify) rejects it.
+                self.assertEqual(c.verify_published([path], expected, dict(c.os.environ)), full)
+                with self.assertRaises(RuntimeError): c.verify([path], expected, dict(c.os.environ))
+                narinfo.unlink()
+                with self.assertRaises(ValueError): c.verify_published([path], expected, dict(c.os.environ))
+            with contextlib.redirect_stdout(io.StringIO()):
+                manifest = c.release_manifest([path], dict(c.os.environ))
+            self.assertRegex(manifest, c.MANIFEST.pattern)
+            self.assertEqual(c.run('nix-store', '--query', '--references', manifest).split(), [path])
+
 
 class RetentionDiagnostics(unittest.TestCase):
     def test_ledger_fetch_failure_reports_retention_phase(self):
@@ -472,6 +505,168 @@ class RetentionDiagnostics(unittest.TestCase):
                 self.assertNotIn(sha, output.getvalue())
 
 
+class PublishedMetadataGate(unittest.TestCase):
+    """The promotion gate reads signed narinfo metadata only, in batches."""
+
+    def commands(self, present, signatures_ok=True, calls=None):
+        calls = [] if calls is None else calls
+        def info(paths, env, store):
+            calls.append(('info', tuple(paths), store))
+            if any(p not in present.get(store, {}) for p in paths):
+                raise c.CommandFailure("missing-input-or-output (exit 1): error: path '<store-path>' is not valid",
+                                       'missing-input-or-output')
+            return {p: present[store][p] for p in paths}
+        def run(*args, env=None):
+            calls.append(('run', args, env))
+            if not signatures_ok:
+                raise c.CommandFailure('cache-signature (exit 2)', 'cache-signature')
+            return ''
+        return info, run, calls
+
+    def test_signed_metadata_passes_without_reading_nars_and_matches_the_full_proof(self):
+        info, run, calls = self.commands({c.CACHE: {A: ENTRY}})
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run):
+            proof = c.verify_published([A], {A: ENTRY}, {})
+        self.assertEqual(proof, c.digest({'roots': [A], 'metadata': {A: ENTRY}}))
+        verifies = [args for kind, args, _ in calls if kind == 'run']
+        self.assertEqual(len(verifies), 1)
+        self.assertIn('--no-contents', verifies[0])
+        self.assertIn('--sigs-needed', verifies[0])
+        self.assertNotIn('copy', verifies[0])
+
+    def test_niks3_paths_need_the_niks3_key_and_upstream_paths_the_upstream_key(self):
+        root = dict(ENTRY, references=[B])
+        info, run, calls = self.commands({c.CACHE: {A: root}, c.UPSTREAM: {B: ENTRY}})
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run):
+            c.verify_published([A], {A: root, B: ENTRY}, {})
+        verifies = {args[args.index('--store')+1]: (args, env) for kind, args, env in calls if kind == 'run'}
+        self.assertEqual(set(verifies), {c.CACHE, c.UPSTREAM})
+        cache_config = verifies[c.CACHE][1]['NIX_CONFIG'].splitlines()[-1]
+        upstream_config = verifies[c.UPSTREAM][1]['NIX_CONFIG'].splitlines()[-1]
+        self.assertEqual(cache_config, 'trusted-public-keys = ' + c.KEY)
+        self.assertEqual(upstream_config, 'trusted-public-keys = ' + c.UPSTREAM_KEY)
+        self.assertIn(A, verifies[c.CACHE][0]); self.assertNotIn(B, verifies[c.CACHE][0])
+        self.assertIn(B, verifies[c.UPSTREAM][0])
+
+    def test_missing_root_fails_and_never_falls_back_to_upstream(self):
+        info, run, calls = self.commands({c.CACHE: {}, c.UPSTREAM: {A: ENTRY}})
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run):
+            with self.assertRaises(ValueError): c.verify_published([A], {A: ENTRY}, {})
+        self.assertFalse(any(store == c.UPSTREAM for kind, _, store in calls if kind == 'info'))
+
+    def test_path_missing_everywhere_fails(self):
+        root = dict(ENTRY, references=[B])
+        info, run, _ = self.commands({c.CACHE: {A: root}, c.UPSTREAM: {}})
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run):
+            with self.assertRaises(ValueError): c.verify_published([A], {A: root, B: ENTRY}, {})
+
+    def test_bad_signature_fails(self):
+        info, run, _ = self.commands({c.CACHE: {A: ENTRY}}, signatures_ok=False)
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run):
+            with self.assertRaises(c.CommandFailure) as raised: c.verify_published([A], {A: ENTRY}, {})
+        self.assertEqual(raised.exception.category, 'cache-signature')
+
+    def test_lookup_failures_other_than_missing_are_not_masked(self):
+        def info(paths, env, store):
+            raise c.CommandFailure('authorization (exit 1)', 'authorization')
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', return_value=''):
+            with self.assertRaises(c.CommandFailure): c.verify_published([A], {A: ENTRY}, {})
+
+    def test_missing_dependency_is_isolated_within_a_large_batch(self):
+        names = ['/nix/store/' + format(n, '032d').translate(str.maketrans('0123456789', 'abcdfghijk')) + '-dep' for n in range(200)]
+        lost = names[137]
+        expected = {p: ENTRY for p in names}
+        expected[A] = dict(ENTRY, references=names)
+        cache = {p: e for p, e in expected.items() if p != lost}
+        info, run, calls = self.commands({c.CACHE: cache, c.UPSTREAM: {lost: ENTRY}})
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run):
+            c.verify_published([A], expected, {})
+        upstream = [paths for kind, paths, store in calls if kind == 'info' and store == c.UPSTREAM]
+        self.assertEqual(upstream, [(lost,)])
+        lookups = [paths for kind, paths, store in calls if kind == 'info' and store == c.CACHE]
+        self.assertLess(len(lookups), 40)
+
+    def test_reference_or_size_mismatch_is_rejected_and_same_reference_rebuild_adopted(self):
+        cached = dict(ENTRY, narHash='sha256-'+'B'*43+'=')
+        info, run, _ = self.commands({c.CACHE: {A: cached}})
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(c.verify_published([A], {A: ENTRY}, {}), c.digest({'roots': [A], 'metadata': {A: cached}}))
+        info, run, _ = self.commands({c.CACHE: {A: dict(ENTRY, references=[A])}})
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ValueError): c.verify_published([A], {A: ENTRY}, {})
+        root = dict(ENTRY, references=[B])
+        info, run, _ = self.commands({c.CACHE: {A: root}, c.UPSTREAM: {B: dict(ENTRY, narSize=99)}})
+        with patch.object(c, 'info', side_effect=info), patch.object(c, 'run', side_effect=run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ValueError): c.verify_published([A], {A: root, B: ENTRY}, {})
+
+    def test_incomplete_or_empty_closures_cannot_be_green(self):
+        with self.assertRaises(ValueError): c.verify_published([A], {A: dict(ENTRY, references=[B])}, {})
+        with self.assertRaises(ValueError): c.verify_published([], {}, {})
+
+    def test_missing_path_diagnostics_are_classified(self):
+        self.assertEqual(c.failure_category("error: path '/nix/store/x' is not valid"), 'missing-input-or-output')
+        self.assertEqual(c.failure_category("path '/nix/store/x' is untrusted"), 'cache-signature')
+
+
+class RetentionPins(unittest.TestCase):
+    RULES = {'repository': 'dweee/fixture', 'forge': 'github', 'remote': 'https://github.com/dweee/fixture.git'}
+    MANIFEST = '/nix/store/' + 'm'*32 + '-release-roots'
+
+    def test_pin_names_are_fixed_roles_per_repository_and_system(self):
+        self.assertEqual(c.pin_name(self.RULES, 'x86_64-linux', 'tested'), 'dweee-fixture.x86_64-linux.tested')
+        self.assertEqual(c.pin_name(self.RULES, 'aarch64-darwin', 'stable-recent-3'), 'dweee-fixture.aarch64-darwin.stable-recent-3')
+        for system, role in [('x86_64-linux', 'tested-recent-4'), ('x86_64-linux', 'arbitrary'), ('riscv64-linux', 'tested')]:
+            with self.subTest(role=role), self.assertRaises(ValueError): c.pin_name(self.RULES, system, role)
+
+    def test_recorded_manifests_become_role_pins_and_older_releases_are_reported(self):
+        records = {'a'*40: {'retention': {'x86_64-linux': self.MANIFEST}}, 'b'*40: {'proofs': {}}}
+        roles = {'tested': 'a'*40, 'tested-recent-1': 'a'*40, 'stable': 'b'*40}
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            pins = c.retention_pins(self.RULES, 'x86_64-linux', records, roles)
+        self.assertEqual(pins, {'dweee-fixture.x86_64-linux.tested': self.MANIFEST,
+                                'dweee-fixture.x86_64-linux.tested-recent-1': self.MANIFEST})
+        self.assertIn('stable predates retention manifests', output.getvalue())
+        self.assertEqual(c.retention_pins(self.RULES, 'aarch64-linux', records, {'tested': 'a'*40}), {})
+        with self.assertRaises(ValueError):
+            c.retention_pins(self.RULES, 'x86_64-linux', {'a'*40: {'retention': {'x86_64-linux': A}}}, {'tested': 'a'*40})
+
+    def test_recovery_releases_are_pinned_before_the_candidate(self):
+        calls = []
+        def run(*args, env=None):
+            calls.append(args)
+            return ''
+        records = {'a'*40: {'retention': {'x86_64-linux': self.MANIFEST}}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(c, 'release_ledger', return_value=(records, {'tested': 'a'*40})), \
+                patch.object(c, 'release_manifest', return_value=self.MANIFEST), \
+                patch.object(c, 'run', side_effect=run), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(c.pin_release(self.RULES, 'x86_64-linux', [A], {}, {}, directory), self.MANIFEST)
+        self.assertIn('--pins', calls[0])
+        self.assertIn('--pin', calls[1])
+        self.assertEqual(calls[1][calls[1].index('--pin')+1], 'dweee-fixture.x86_64-linux.candidate')
+
+    def test_promotion_records_validated_retention_manifests(self):
+        rules = {'targets': {'x86_64-linux': []}, 'remote': 'https://github.com/dweee/fixture.git',
+                 'repository': 'dweee/fixture', 'branch': 'main'}
+        with patch.object(c, 'policy', return_value=rules):
+            for retention in [{'x86_64-linux': A}, {'aarch64-linux': self.MANIFEST}]:
+                with self.subTest(retention=retention), self.assertRaises(ValueError):
+                    c.promote('tested', 'a'*40, {'x86_64-linux': 'b'*64}, retention)
+        messages = []
+        def run(*args, env=None):
+            if args[:2] == ('git', 'rev-parse'): return 'a'*40
+            if 'tag' in args and '-m' in args: messages.append(json.loads(args[args.index('-m')+1]))
+            return ''
+        with patch.object(c, 'policy', return_value=rules), patch.object(c, 'run', side_effect=run), \
+                patch.dict(c.os.environ, {'CHANNEL_TOKEN': 'fixture'}), contextlib.redirect_stdout(io.StringIO()):
+            c.promote('tested', 'a'*40, {'x86_64-linux': 'b'*64}, {'x86_64-linux': self.MANIFEST})
+        self.assertEqual(messages[0]['retention'], {'x86_64-linux': self.MANIFEST})
+        self.assertIs(messages[0]['activationAuthorized'], False)
+
+
 class RetentionSelection(unittest.TestCase):
     def test_advertised_old_stable_and_three_recent_releases_are_kept(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -495,6 +690,11 @@ class RetentionSelection(unittest.TestCase):
             git('branch','stable',revisions[0])
             records=c.release_refs({'forge':'github','remote':repo.as_uri()})
             self.assertEqual(set(records),set(revisions[-3:]+[revisions[0]]))
+            records,roles=c.release_ledger({'forge':'github','remote':repo.as_uri()})
+            self.assertEqual(roles,{'tested':revisions[-1],'stable':revisions[0],
+                                    'tested-recent-1':revisions[4],'tested-recent-2':revisions[3],
+                                    'tested-recent-3':revisions[2],'stable-recent-1':revisions[0]})
+            self.assertTrue(set(roles.values())<=set(records))
 
 
 @unittest.skipUnless(shutil.which('nix'), 'Nix required for whole-flake evaluation fixture')

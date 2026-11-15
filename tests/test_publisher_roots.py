@@ -33,7 +33,7 @@ class PublisherRoots(unittest.TestCase):
             raise AssertionError(args)
         rules = {'forge': 'forgejo', 'targets': {'x86_64-linux': [
             {'attribute': 'packages.x86_64-linux.default', 'visibility': 'private'}]}}
-        with patch.object(channel, 'policy', return_value=rules), patch.object(channel, 'source', return_value='a'*40), patch.object(channel, 'run', side_effect=run), patch.object(channel, 'info', return_value={root: {}}), patch.object(channel, 'native_check_names', return_value=['smoke']), patch.object(channel, 'verify', side_effect=ValueError('later verification failed')):
+        with patch.object(channel, 'policy', return_value=rules), patch.object(channel, 'source', return_value='a'*40), patch.object(channel, 'run', side_effect=run), patch.object(channel, 'info', return_value={root: {}}), patch.object(channel, 'native_check_names', return_value=['smoke']), patch.object(channel, 'verify_published', side_effect=ValueError('later verification failed')):
             with self.assertRaisesRegex(ValueError, 'later verification failed'):
                 channel.build('x86_64-linux')
         self.assertEqual(uploads, [[root], [check]])
