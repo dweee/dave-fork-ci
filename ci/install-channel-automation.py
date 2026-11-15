@@ -274,6 +274,7 @@ def install(args):
                            'open(os.environ["GITHUB_OUTPUT"],"a").write("revision="+s+"\\n")\'')}]
         jobs = {'test': test}
         proofs = {}
+        manifests = {}
         needed = ['test']
         for system in config['targets']:
             key = 'build_' + system.replace('-', '_')
@@ -281,7 +282,8 @@ def install(args):
                            'aarch64-darwin': 'macos-15', 'x86_64-darwin': 'macos-15-intel'} if github else
                           {'x86_64-linux': 'nix', 'aarch64-linux': 'braco',
                            'aarch64-darwin': 'darwin-aarch64', 'x86_64-darwin': 'darwin-x86_64'})[system], cache=True)
-            native.update(needs=['test'], outputs={'proof': expr('steps.release.outputs.proof')},
+            native.update(needs=['test'], outputs={'proof': expr('steps.release.outputs.proof'),
+                                                   'retention': expr('steps.release.outputs.retention')},
                           **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
             # Keep derivations serial to bound memory, while allowing the
             # Linux builders to use every CPU assigned to their runners. The
@@ -291,13 +293,15 @@ def install(args):
                 {'name': 'Configure job-local private cache reader',
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
                  'run': python('ci/configure-attic-read.py')},
-                {'name': 'Build complete inventory, checkpoint closures, verify remote NAR bytes', 'id': 'release',
+                {'name': 'Build complete inventory, checkpoint closures, verify signed cache metadata, pin release', 'id': 'release',
                  'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
                  'run': python('ci/release-channel.py build --system '+system)},
                 {'name': 'Remove cache reader', 'if': expr('always()'),
                  'run': python('ci/configure-attic-read.py --cleanup', readonly=True)}]
             if github:
-                native['permissions'] = {'contents': 'read', 'id-token': 'write'}
+                # checks: write lets the gate keep one live progress check run;
+                # GitHub serves job logs only after a job ends.
+                native['permissions'] = {'contents': 'read', 'id-token': 'write', 'checks': 'write'}
                 for step in native['steps']:
                     if 'configure-attic-read.py' in step.get('run', ''):
                         step['run'] = step['run'].replace('configure-attic-read.py', 'configure-niks3.py')
@@ -305,7 +309,7 @@ def install(args):
                             step['run'] += ' --oidc'
                         step.pop('env', None)
                     elif 'release-channel.py build' in step.get('run', ''):
-                        step.pop('env', None)
+                        step['env'] = {'STATUS_TOKEN': expr('github.token')}
             else:
                 for step in native['steps']:
                     if 'configure-attic-read.py' in step.get('run', ''):
@@ -314,7 +318,8 @@ def install(args):
                             step['env'] = {'NIKS3_READ_NETRC': expr('secrets.FLAKEY_NIKS3_READ_NETRC'),
                                            'NIKS3_WRITE_TOKEN': expr('secrets.FLAKEY_NIKS3_WRITE_TOKEN')}
                     elif 'release-channel.py build' in step.get('run', ''):
-                        step.pop('env', None)
+                        # Read-only ledger access for the retention pins.
+                        step['env'] = {'SOURCE_TOKEN': expr('github.token')}
             native['steps'][-2:-2] = [
                 {'name': 'Install pinned Niks3 publisher and retain its build dependencies',
                  'run': shell('bash ci/install-niks3.sh --retain-bootstrap')},
@@ -361,15 +366,17 @@ def install(args):
             jobs['retain_'+system.replace('-', '_')] = retention
             needed.append(key)
             proofs[system] = expr('needs.'+key+'.outputs.proof')
+            manifests[system] = expr('needs.'+key+'.outputs.retention')
         promoter = job()
         promoter.update(needs=needed, permissions={'contents': 'write'},
                         **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
         promoter['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(runner=promoter['runs-on'])+[
             {'name': 'Atomically publish immutable release tag and channel',
              'env': {'CHANNEL_TOKEN': expr('secrets.CHANNEL_TOKEN || github.token'),
-                     'RELEASE_PROOFS': json.dumps(proofs), 'REVISION': expr('needs.test.outputs.revision'),
+                     'RELEASE_PROOFS': json.dumps(proofs), 'RELEASE_RETENTION': json.dumps(manifests),
+                     'REVISION': expr('needs.test.outputs.revision'),
                      'CHANNEL': expr("inputs.channel || 'tested'")},
-             'run': python('ci/release-channel.py promote --channel "$CHANNEL" --revision "$REVISION" --proofs "$RELEASE_PROOFS"')}]
+             'run': python('ci/release-channel.py promote --channel "$CHANNEL" --revision "$REVISION" --proofs "$RELEASE_PROOFS" --retention "$RELEASE_RETENTION"')}]
         jobs['promote'] = promoter
         triggers = {
             'push': {'branches': [args.branch]},
@@ -435,15 +442,23 @@ def install(args):
     (ci / 'CHANNELS.md').write_text('''# Release and update automation
 
 `main` (or the configured source branch) accepts development changes. `tested`
-advances only after the entire explicit native inventory and flake checks build,
-upload, and pass independent remote NAR content and signature verification.
+advances only after the entire explicit native inventory and flake checks build
+and upload, and every path of the built closures passes the cache metadata gate:
+Niks3 serves a narinfo for each root with a valid Niks3 signature, every other
+path is served by Niks3 with the Niks3 signature or, when Niks3 omitted it, by
+cache.nixos.org with the official signature, and narHash, narSize and references
+equal the build (the signature binds them). Lookups are parallel and batched;
+no NAR bytes are read before promotion, so a missing or corrupt NAR object
+behind a valid signed narinfo is not caught here. The daily audit below reads
+those bytes, and downstream deployments that substitute the closure are the
+end-to-end proof.
 Each target closure is policy checked and uploaded as soon as it builds. Valid
 locally built or custom-cache outputs from its recursive derivation graph are
 also published, including fixed-output/vendor dependencies and completed work
 after a later build failure. Official-upstream-signed substitutes are filtered
 using local metadata; this is not an independent upstream availability proof. These partial cache entries do not
 advance a channel; promotion still waits for the full inventory, native checks,
-and independent verification.
+and the metadata gate.
 `stable` is an owner-dispatched selection of an immutable `tested-<commit>` tag;
 it repeats builds/checks/cache verification. Flakes continue to lock exact commits.
 Failed, skipped or missing platforms never advance a channel. Promotion uses
@@ -455,12 +470,24 @@ Mac may provide Intel Darwin compatibility only with Nix extra-platforms and
 working Rosetta; other platform mismatches are rejected. Missing runner capacity
 or an incomplete platform never counts as successful release/cache coverage.
 
+Niks3 garbage-collects closures that were not pushed within its retention
+window unless a pin names them. Each build writes a small `release-roots`
+manifest per system (a store path whose references are exactly the release
+roots), pushes it pinned as `<owner>-<name>.<system>.candidate`, and the
+release tag records it under `retention`. Before that, the build re-pins the
+advertised `tested`/`stable` releases and the three newest tags per channel
+under fixed role names (`.tested`, `.stable`, `.tested-recent-1` ...). Pins
+are only created or moved, never deleted; a moved pin returns its previous
+closure to the normal push-age window. A pin failure fails the build, so the
+channel does not advance. Releases tagged before manifests existed are kept
+only by the push-age window until they leave the recovery set.
+
 The daily full run also verifies the advertised tested/stable revisions and the
 three newest tags per channel against their original build proofs, without
-source builds. These reads prove availability and integrity; they do not replace
-the cache server's retention policy. Historical helper code is never executed.
-No release/cache objects are deleted by this automation. Older tags remain
-immutable source selections, but only this bounded recovery set is actively
+source builds. It reads and hashes every NAR, so it is the content audit; it
+does not gate promotion. Historical helper code is never executed. No release
+or cache objects are deleted by this automation. Older tags remain immutable
+source selections, but only this bounded recovery set is pinned and actively
 rechecked; cache uptime is still monitored separately.
 
 Every six hours, the updater resolves `tracking-inputs.json`, uses Nix to write
@@ -484,8 +511,22 @@ Required repository configuration:
   OIDC with audience `https://niks3.monke.fail`. Trusted readers use the separate
   read-only audience `https://niks3.monke.fail/read` and `/oidc` cache object route,
   refreshing the job-local netrc until cleanup. PR events receive no private
-  reader. Niks3 upload and signed remote verification gate releases. No private
+  reader. Niks3 upload and signed remote metadata gate releases. No private
   Forgejo source credentials or inputs go to GitHub.
+- GitHub release build jobs hold `checks: write` and keep one check run per
+  system (`release progress / <system>`) updated with the current target, check
+  count or phase, because GitHub serves job logs only after a job ends. Follow
+  it with `gh api repos/OWNER/NAME/commits/SHA/check-runs --jq
+  '.check_runs[] | select(.name | startswith("release progress")) | [.name, .status, .output.title]'`.
+  The token never reaches Nix; a killed job leaves its check run in progress.
+- Native flake checks whose outputs are already built inventory roots (for
+  example `checks = self.packages // { ... }`) are not built a second time; only
+  the remaining checks run.
+- Retention pins use the same publisher grant (write scope; creating or moving a
+  pin needs no admin rights). The build reads the release ledger read-only: the
+  job token on Forgejo, anonymously for public GitHub repositories. Pin names are
+  not reserved by default, so any publisher can move them; the Niks3 server can
+  reserve each repository's `<owner>-<name>.*` prefix for that repository.
 - `inputCheckWorkflows` lists reviewed GitHub native workflows with workflow_dispatch.
   The updater explicitly dispatches them on the update branch head, including
   when using GITHUB_TOKEN. Each workflow must keep cache publication and secrets
