@@ -153,6 +153,24 @@ class Installer(unittest.TestCase):
                         for setting in ['connect-timeout = 20', 'stalled-download-timeout = 120', 'download-attempts = 5']:
                             self.assertIn(setting, job['env']['NIX_CONFIG'])
 
+    def test_release_manifests_flow_from_each_build_to_promotion_only(self):
+        for forge in ['forgejo', 'github']:
+            with tempfile.TemporaryDirectory() as directory:
+                jobs = self.install(directory, forge)['release-channels.yml']['jobs']
+            with self.subTest(forge=forge):
+                self.assertEqual(jobs['build_x86_64_linux']['outputs']['retention'],
+                                 '${{ steps.release.outputs.retention }}')
+                promote = jobs['promote']['steps'][-1]
+                self.assertEqual(json.loads(promote['env']['RELEASE_RETENTION']),
+                                 {'x86_64-linux': '${{ needs.build_x86_64_linux.outputs.retention }}'})
+                self.assertIn('--retention "$RELEASE_RETENTION"', promote['run'])
+                retain = jobs['retain_x86_64_linux']
+                self.assertNotIn('x86_64-linux', retain)
+                self.assertNotIn('retain', retain.get('needs', []))
+                self.assertNotIn('retain_x86_64_linux', jobs['promote']['needs'])
+                build = next(s for s in jobs['build_x86_64_linux']['steps'] if 'release-channel.py build' in s.get('run', ''))
+                self.assertEqual(build.get('env'), {'SOURCE_TOKEN': '${{ github.token }}'} if forge == 'forgejo' else None)
+
     def test_required_status_check_names_are_stable(self):
         # Branch protection requires "PR automation checks / test (pull_request)"
         # (and "Automation checks / test" for repositories without release targets).

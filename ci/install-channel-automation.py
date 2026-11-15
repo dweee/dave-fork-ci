@@ -274,7 +274,7 @@ def install(args):
                            'open(os.environ["GITHUB_OUTPUT"],"a").write("revision="+s+"\\n")\'')}]
         jobs = {'test': test}
         proofs = {}
-        retention = {}
+        manifests = {}
         needed = ['test']
         for system in config['targets']:
             key = 'build_' + system.replace('-', '_')
@@ -364,14 +364,14 @@ def install(args):
             jobs['retain_'+system.replace('-', '_')] = retention
             needed.append(key)
             proofs[system] = expr('needs.'+key+'.outputs.proof')
-            retention[system] = expr('needs.'+key+'.outputs.retention')
+            manifests[system] = expr('needs.'+key+'.outputs.retention')
         promoter = job()
         promoter.update(needs=needed, permissions={'contents': 'write'},
                         **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
         promoter['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(runner=promoter['runs-on'])+[
             {'name': 'Atomically publish immutable release tag and channel',
              'env': {'CHANNEL_TOKEN': expr('secrets.CHANNEL_TOKEN || github.token'),
-                     'RELEASE_PROOFS': json.dumps(proofs), 'RELEASE_RETENTION': json.dumps(retention),
+                     'RELEASE_PROOFS': json.dumps(proofs), 'RELEASE_RETENTION': json.dumps(manifests),
                      'REVISION': expr('needs.test.outputs.revision'),
                      'CHANNEL': expr("inputs.channel || 'tested'")},
              'run': python('ci/release-channel.py promote --channel "$CHANNEL" --revision "$REVISION" --proofs "$RELEASE_PROOFS" --retention "$RELEASE_RETENTION"')}]
