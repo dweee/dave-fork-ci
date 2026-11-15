@@ -57,6 +57,11 @@ NO_BUILD = ['--option', 'max-jobs', '0', '--option', 'builders', '', '--option',
 
 
 ACTIVE_PHASE = 'startup'
+# GitHub serves job logs only after a job ends. Trusted GitHub release jobs
+# receive STATUS_TOKEN (checks: write) and keep one check run per system up to
+# date, so `gh api repos/OWNER/NAME/commits/SHA/check-runs` shows live progress.
+PROGRESS = {'system': None, 'sha': None, 'id': None, 'last': 0.0, 'disabled': False}
+PROGRESS_INTERVAL = 15
 
 
 def phase(label):
@@ -65,6 +70,55 @@ def phase(label):
         raise ValueError('Invalid release phase')
     ACTIVE_PHASE = label
     print('Release phase: ' + label, flush=True)
+
+
+def progress_request(method, path, body):
+    import urllib.request
+    request = urllib.request.Request(
+        'https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY'] + path,
+        data=json.dumps(body).encode(), method=method,
+        headers={'Authorization': 'Bearer ' + os.environ['STATUS_TOKEN'], 'Accept': 'application/vnd.github+json',
+                 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'release-channel-progress'})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read() or b'{}')
+
+
+def progress(description, state='pending', force=False):
+    """Best effort live progress; never fails the gate and never reaches Nix."""
+    if (PROGRESS['disabled'] or not os.environ.get('STATUS_TOKEN') or not PROGRESS['sha'] or not PROGRESS['system']
+            or os.environ.get('GITHUB_SERVER_URL') != 'https://github.com'
+            or not re.fullmatch(r'[\w.-]+/[\w.-]+', os.environ.get('GITHUB_REPOSITORY', ''))):
+        return False
+    now = time.monotonic()
+    final = state != 'pending'
+    if not (force or final) and now - PROGRESS['last'] < PROGRESS_INTERVAL:
+        return False
+    title = (PROGRESS['system'] + ' ' + description)[:200]
+    body = {'output': {'title': title, 'summary': title + '\n\nPhase: `' + ACTIVE_PHASE + '`'}}
+    if final:
+        body.update(status='completed', conclusion='success' if state == 'success' else 'failure')
+    else:
+        body['status'] = 'in_progress'
+    try:
+        if PROGRESS['id'] is None:
+            body.update(name='release progress / ' + PROGRESS['system'], head_sha=PROGRESS['sha'])
+            if re.fullmatch(r'\d+', os.environ.get('GITHUB_RUN_ID', '')):
+                body['details_url'] = ('https://github.com/' + os.environ['GITHUB_REPOSITORY']
+                                       + '/actions/runs/' + os.environ['GITHUB_RUN_ID'])
+            created = progress_request('POST', '/check-runs', body)
+            if not isinstance(created.get('id'), int):
+                raise ValueError('No check run id')
+            PROGRESS['id'] = created['id']
+        else:
+            progress_request('PATCH', '/check-runs/' + str(PROGRESS['id']), body)
+    except Exception:
+        # Progress is advisory. Stop after the first failure instead of
+        # slowing every later target with timeouts.
+        PROGRESS['disabled'] = True
+        print('Release progress check run unavailable; continuing without it', file=sys.stderr, flush=True)
+        return False
+    PROGRESS['last'] = now
+    return True
 
 
 class CommandFailure(RuntimeError):
@@ -618,6 +672,29 @@ def native_check_names(flake, system, env):
     return json.loads(run('nix', 'eval', '--json', '--expr', expression, *FLAGS, env=env))
 
 
+def native_check_outputs(flake, system, env):
+    """Output paths of every native check, evaluated once without building."""
+    expression = ('builtins.mapAttrs (n: d: map (o: d.${o}.outPath) (d.outputs or [ "out" ])) '
+                  '((builtins.getFlake '+json.dumps(flake)+').checks.'+system+' or {})')
+    value = json.loads(run('nix', 'eval', '--json', '--expr', expression, *FLAGS, *NO_BUILD, env=env))
+    if (not isinstance(value, dict) or any(not isinstance(v, list) or not v for v in value.values())
+            or any(not isinstance(p, str) or not STORE.fullmatch(p) or p.endswith('.drv') for v in value.values() for p in v)):
+        raise ValueError('Invalid native check outputs')
+    return value
+
+
+def distinct_checks(check_outputs, roots):
+    """Checks to build: those whose outputs are not already built inventory roots.
+
+    A flake that reuses packages as checks (`checks = self.packages // {...}`)
+    would otherwise rebuild, re-upload and re-inspect every package a second
+    time. The same output path is the same derivation output, already built,
+    published and covered by the closure gate.
+    """
+    built = set(roots)
+    return sorted(name for name, paths in check_outputs.items() if not set(paths) <= built)
+
+
 def audit(rules, sha, system, record, env, flake=None, expression=None):
     phase('validate-retained-proof')
     if (record.get('commit') != sha or record.get('policy') != digest(rules)
@@ -931,9 +1008,11 @@ def build(system):
     if rules.get('kind') == 'fleet':
         raise ValueError('Fleet releases require the existing exact-release verifier')
     sha = source()
+    PROGRESS.update(system=system, sha=sha)
+    progress('starting', force=True)
     # Writer/forge tokens never enter Nix evaluation or package build processes.
     env = {k: v for k, v in os.environ.items()
-           if k not in {'ATTIC_TOKEN', 'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'}}
+           if k not in {'ATTIC_TOKEN', 'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'STATUS_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'}}
     phase('check-native-platform')
     native_platform_ready(rules, system, env)
     targets = rules['targets'][system]
@@ -951,10 +1030,12 @@ def build(system):
     expected = {}
     with tempfile.TemporaryDirectory(prefix='channel-outputs-') as directory:
         phase('prepare-cache-publisher')
-        publish_env = dict(os.environ)
+        publish_env = {k: v for k, v in os.environ.items() if k != 'STATUS_TOKEN'}
         outputs = Path(directory) / 'outputs.txt'
         for index, target in enumerate(targets, 1):
             print(f'Processing inventory target {index}/{len(targets)}', flush=True)
+            progress(f'target {index}/{len(targets)} ' + target['attribute'].rsplit('.', 1)[-1],
+                     force=index in (1, len(targets)))
             attr = flake + '#' + target['attribute']
             phase('inspect-output-policy')
             if target['visibility'] == 'public':
@@ -991,10 +1072,18 @@ def build(system):
         # otherwise reuse a cached output. Missing checks are an empty set.
         phase('build-native-checks')
         checks = native_check_names(flake, system, env)
-        for name in checks:
+        if any(not re.fullmatch(r'[\w+-]+', name) for name in checks):
+            raise ValueError('Invalid check name')
+        check_outputs = native_check_outputs(flake, system, env)
+        if set(check_outputs) != set(checks):
+            raise ValueError('Native check inventory changed during evaluation')
+        distinct = distinct_checks(check_outputs, roots)
+        print(f'Building {len(distinct)} of {len(checks)} native checks; the other '
+              f'{len(checks) - len(distinct)} are inventory outputs already built and published', flush=True)
+        progress(f'checks 0/{len(distinct)} ({len(checks) - len(distinct)} are inventory outputs)', force=True)
+        for number, name in enumerate(distinct, 1):
             native_build_ready(rules, system, env)
-            if not re.fullmatch(r'[\w+-]+', name):
-                raise ValueError('Invalid check name')
+            progress(f'checks {number}/{len(distinct)} ' + name, force=number == len(distinct))
             check_attr = flake + '#checks.' + system + '.' + name
             check_visibility = 'cache-only' if all(t['visibility'] == 'cache-only' for t in targets) else 'public'
             if rules['forge'] == 'github':
@@ -1017,7 +1106,9 @@ def build(system):
         if not roots or not expected or not set(roots) <= set(expected):
             raise ValueError('Missing built output closure')
         phase('verify-published-metadata')
+        progress(f'verifying signed metadata for {len(expected)} closure paths', force=True)
         proof = verify_published(roots, expected, env)
+        progress('pinning release closures', force=True)
         manifest = pin_release(rules, system, roots, env, publish_env, directory)
         phase('record-release-proof')
         if source() != sha:
@@ -1027,6 +1118,8 @@ def build(system):
             with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
                 stream.write('proof=' + receipt + '\nretention=' + manifest + '\n')
         print('Required builds, checks, upload and signed cache metadata passed for ' + system)
+        progress('passed: ' + str(len(targets)) + ' targets, ' + str(len(distinct)) + ' distinct checks, '
+                 + str(len(expected)) + ' signed closure paths', state='success')
 
 
 def git_env(directory):
@@ -1113,11 +1206,13 @@ def main():
             print(json.dumps(policy(), sort_keys=True))
     except CommandFailure as error:
         print('Release channel gate failed during ' + ACTIVE_PHASE + ': ' + str(error) + '; the previous channel is retained.', file=sys.stderr)
+        progress('failed during ' + ACTIVE_PHASE + ': ' + (error.category or 'command-failed'), state='failure')
         return 1
     except (ValueError, KeyError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         kind = failure_category(str(error))
         if kind == 'command-failed': kind = 'validation-failed'
         print('Release channel gate failed during ' + ACTIVE_PHASE + ': ' + kind + '; the previous channel is retained.', file=sys.stderr)
+        progress('failed during ' + ACTIVE_PHASE + ': ' + kind, state='failure')
         return 1
     return 0
 

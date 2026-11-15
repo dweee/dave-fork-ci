@@ -33,10 +33,38 @@ class PublisherRoots(unittest.TestCase):
             raise AssertionError(args)
         rules = {'forge': 'forgejo', 'targets': {'x86_64-linux': [
             {'attribute': 'packages.x86_64-linux.default', 'visibility': 'private'}]}}
-        with patch.object(channel, 'policy', return_value=rules), patch.object(channel, 'source', return_value='a'*40), patch.object(channel, 'run', side_effect=run), patch.object(channel, 'info', return_value={root: {}}), patch.object(channel, 'native_check_names', return_value=['smoke']), patch.object(channel, 'verify_published', side_effect=ValueError('later verification failed')):
+        with patch.object(channel, 'policy', return_value=rules), patch.object(channel, 'source', return_value='a'*40), patch.object(channel, 'run', side_effect=run), patch.object(channel, 'info', return_value={root: {}}), patch.object(channel, 'native_check_names', return_value=['smoke']), patch.object(channel, 'native_check_outputs', return_value={'smoke': [check]}), patch.object(channel, 'verify_published', side_effect=ValueError('later verification failed')):
             with self.assertRaisesRegex(ValueError, 'later verification failed'):
                 channel.build('x86_64-linux')
         self.assertEqual(uploads, [[root], [check]])
+
+    def test_checks_that_are_inventory_outputs_are_not_rebuilt(self):
+        root = '/nix/store/'+'a'*32+'-package'
+        check = '/nix/store/'+'b'*32+'-check'
+        built = []
+        def run(*args, **kwargs):
+            if args[:2] == ('nix', 'eval'):
+                return 'x86_64-linux' if '--impure' in args else json.dumps(['x86_64-linux'])
+            if args[:3] == ('nix', 'derivation', 'show'):
+                path = check if '#checks.' in args[4] else root
+                return json.dumps({'/nix/store/'+'c'*32+'-fixture.drv': {'outputs': {'out': {'path': path}}}})
+            if args[:2] == ('nix', 'build'):
+                built.append(args[2].split('#', 1)[1])
+                return check if '#checks.' in args[2] else root
+            if 'push-niks3.py' in args[1]:
+                return ''
+            raise AssertionError(args)
+        rules = {'forge': 'forgejo', 'targets': {'x86_64-linux': [
+            {'attribute': 'packages.x86_64-linux.default', 'visibility': 'private'}]}}
+        with patch.object(channel, 'policy', return_value=rules), patch.object(channel, 'source', return_value='a'*40), \
+                patch.object(channel, 'run', side_effect=run), patch.object(channel, 'info', return_value={root: {}}), \
+                patch.object(channel, 'completed_build_outputs', return_value=[]), \
+                patch.object(channel, 'native_check_names', return_value=['default', 'smoke']), \
+                patch.object(channel, 'native_check_outputs', return_value={'default': [root], 'smoke': [check]}), \
+                patch.object(channel, 'verify_published', side_effect=ValueError('stop after checks')):
+            with self.assertRaisesRegex(ValueError, 'stop after checks'):
+                channel.build('x86_64-linux')
+        self.assertEqual(built, ['packages.x86_64-linux.default^*', 'checks.x86_64-linux.smoke^*'])
 
     def test_release_does_not_install_an_attic_client(self):
         calls=[]
@@ -46,7 +74,7 @@ class PublisherRoots(unittest.TestCase):
                 return 'aarch64-darwin' if '--impure' in args else json.dumps(['aarch64-darwin'])
             return ''
         rules={'forge':'github','targets':{'aarch64-darwin':[]}}
-        with patch.object(channel,'policy',return_value=rules),patch.object(channel,'source',return_value='a'*40),patch.object(channel,'run',side_effect=run),patch.object(channel,'native_check_names',return_value=[]),patch.object(channel,'verify',return_value='a'*64):
+        with patch.object(channel,'policy',return_value=rules),patch.object(channel,'source',return_value='a'*40),patch.object(channel,'run',side_effect=run),patch.object(channel,'native_check_names',return_value=[]),patch.object(channel,'native_check_outputs',return_value={}),patch.object(channel,'verify',return_value='a'*64):
             with self.assertRaisesRegex(ValueError, 'Missing built output closure'):
                 channel.build('aarch64-darwin')
         self.assertFalse(any('nixpkgs#attic-client' in args for args in calls))

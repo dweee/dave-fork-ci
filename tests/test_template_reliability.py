@@ -169,7 +169,14 @@ class Installer(unittest.TestCase):
                 self.assertNotIn('retain', retain.get('needs', []))
                 self.assertNotIn('retain_x86_64_linux', jobs['promote']['needs'])
                 build = next(s for s in jobs['build_x86_64_linux']['steps'] if 'release-channel.py build' in s.get('run', ''))
-                self.assertEqual(build.get('env'), {'SOURCE_TOKEN': '${{ github.token }}'} if forge == 'forgejo' else None)
+                self.assertEqual(build.get('env'), {'SOURCE_TOKEN': '${{ github.token }}'} if forge == 'forgejo'
+                                 else {'STATUS_TOKEN': '${{ github.token }}'})
+                if forge == 'github':
+                    self.assertEqual(jobs['build_x86_64_linux']['permissions'],
+                                     {'contents': 'read', 'id-token': 'write', 'checks': 'write'})
+                    for job_name, job in jobs.items():
+                        if job_name != 'build_x86_64_linux':
+                            self.assertNotIn('checks', job.get('permissions', {}), job_name)
 
     def test_required_status_check_names_are_stable(self):
         # Branch protection requires "PR automation checks / test (pull_request)"

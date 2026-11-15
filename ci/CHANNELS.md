@@ -72,6 +72,15 @@ Required repository configuration:
   refreshing the job-local netrc until cleanup. PR events receive no private
   reader. Niks3 upload and signed remote metadata gate releases. No private
   Forgejo source credentials or inputs go to GitHub.
+- GitHub release build jobs hold `checks: write` and keep one check run per
+  system (`release progress / <system>`) updated with the current target, check
+  count or phase, because GitHub serves job logs only after a job ends. Follow
+  it with `gh api repos/OWNER/NAME/commits/SHA/check-runs --jq
+  '.check_runs[] | select(.name | startswith("release progress")) | [.name, .status, .output.title]'`.
+  The token never reaches Nix; a killed job leaves its check run in progress.
+- Native flake checks whose outputs are already built inventory roots (for
+  example `checks = self.packages // { ... }`) are not built a second time; only
+  the remaining checks run.
 - Retention pins use the same publisher grant (write scope; creating or moving a
   pin needs no admin rights). The build reads the release ledger read-only: the
   job token on Forgejo, anonymously for public GitHub repositories. Pin names are

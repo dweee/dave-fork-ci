@@ -611,6 +611,77 @@ class PublishedMetadataGate(unittest.TestCase):
         self.assertEqual(c.failure_category("path '/nix/store/x' is untrusted"), 'cache-signature')
 
 
+class NativeCheckSelection(unittest.TestCase):
+    def test_checks_reusing_inventory_outputs_are_skipped(self):
+        outputs = {'hello': [A], 'multi': [A, B], 'real-test': ['/nix/store/' + 'c'*32 + '-test']}
+        self.assertEqual(c.distinct_checks(outputs, [A]), ['multi', 'real-test'])
+        self.assertEqual(c.distinct_checks(outputs, [A, B]), ['real-test'])
+        self.assertEqual(c.distinct_checks({}, [A]), [])
+
+    def test_check_outputs_are_validated(self):
+        for value in [[], {'x': []}, {'x': ['/tmp/x']}, {'x': [A + '.drv']}]:
+            with self.subTest(value=value), patch.object(c, 'run', return_value=json.dumps(value)):
+                with self.assertRaises(ValueError): c.native_check_outputs('git+file:///x', 'x86_64-linux', {})
+        with patch.object(c, 'run', return_value=json.dumps({'x': [A]})) as run:
+            self.assertEqual(c.native_check_outputs('git+file:///x', 'x86_64-linux', {}), {'x': [A]})
+        self.assertIn('max-jobs', run.call_args.args)
+
+
+class LiveProgress(unittest.TestCase):
+    ENV = {'STATUS_TOKEN': 'synthetic', 'GITHUB_SERVER_URL': 'https://github.com',
+           'GITHUB_REPOSITORY': 'dweee/fixture', 'GITHUB_RUN_ID': '42'}
+
+    def setUp(self):
+        saved = dict(c.PROGRESS)
+        self.addCleanup(lambda: (c.PROGRESS.clear(), c.PROGRESS.update(saved)))
+        c.PROGRESS.update(system='x86_64-linux', sha='a'*40, id=None, last=0.0, disabled=False)
+
+    def test_one_check_run_is_created_then_updated_and_completed(self):
+        calls = []
+        def request(method, path, body):
+            calls.append((method, path, body))
+            return {'id': 7} if method == 'POST' else {}
+        with patch.dict(c.os.environ, self.ENV, clear=True), patch.object(c, 'progress_request', side_effect=request):
+            self.assertTrue(c.progress('target 1/3 alpha', force=True))
+            self.assertFalse(c.progress('target 2/3 beta'))
+            self.assertTrue(c.progress('target 3/3 gamma', force=True))
+            self.assertTrue(c.progress('passed', state='success'))
+        self.assertEqual([m for m, _, _ in calls], ['POST', 'PATCH', 'PATCH'])
+        self.assertEqual(calls[0][2]['name'], 'release progress / x86_64-linux')
+        self.assertEqual(calls[0][2]['head_sha'], 'a'*40)
+        self.assertEqual(calls[0][2]['details_url'], 'https://github.com/dweee/fixture/actions/runs/42')
+        self.assertEqual(calls[1][1], '/check-runs/7')
+        self.assertEqual(calls[1][2]['output']['title'], 'x86_64-linux target 3/3 gamma')
+        self.assertEqual((calls[2][2]['status'], calls[2][2]['conclusion']), ('completed', 'success'))
+
+    def test_progress_is_inert_without_a_trusted_github_token(self):
+        for env in [{}, dict(self.ENV, STATUS_TOKEN=''), dict(self.ENV, GITHUB_SERVER_URL='https://git.monke.fail')]:
+            with self.subTest(env=env), patch.dict(c.os.environ, env, clear=True), \
+                    patch.object(c, 'progress_request') as request:
+                self.assertFalse(c.progress('target 1/1 alpha', force=True))
+                request.assert_not_called()
+
+    def test_progress_failure_never_fails_the_gate_and_stops_further_calls(self):
+        with patch.dict(c.os.environ, self.ENV, clear=True), \
+                patch.object(c, 'progress_request', side_effect=OSError('offline')) as request, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(c.progress('target 1/1 alpha', force=True))
+            self.assertFalse(c.progress('failed', state='failure'))
+        self.assertEqual(request.call_count, 1)
+
+    def test_status_token_never_reaches_nix_or_the_publisher(self):
+        captured = {}
+        def stop(rules, system, env):
+            captured['env'] = env
+            raise ValueError('stop')
+        with patch.dict(c.os.environ, dict(self.ENV, PATH='/bin'), clear=True), \
+                patch.object(c, 'policy', return_value={'forge': 'github', 'targets': {'x86_64-linux': []}}), \
+                patch.object(c, 'source', return_value='a'*40), patch.object(c, 'progress', return_value=False), \
+                patch.object(c, 'native_platform_ready', side_effect=stop):
+            with self.assertRaises(ValueError): c.build('x86_64-linux')
+        self.assertNotIn('STATUS_TOKEN', captured['env'])
+
+
 class RetentionPins(unittest.TestCase):
     RULES = {'repository': 'dweee/fixture', 'forge': 'github', 'remote': 'https://github.com/dweee/fixture.git'}
     MANIFEST = '/nix/store/' + 'm'*32 + '-release-roots'
