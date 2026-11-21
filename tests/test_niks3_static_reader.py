@@ -98,6 +98,8 @@ class Niks3StaticReader(unittest.TestCase):
     def test_inherited_nix_config_cannot_drop_private_reader(self):
         os.environ['NIX_CONFIG'] = 'substituters = https://cache.nixos.org/\ncores = 3\n'
         self.configure()
+        os.environ.update(self.exported())
+        self.configure()  # Reconfiguration must not include the config file recursively.
         self.worker.stop()  # Real Nix client; the refresh-worker mock patches subprocess.Popen.
         env = {**os.environ, **self.exported()}
         caches = __import__('json').loads((ROOT/'ci/caches.json').read_text())

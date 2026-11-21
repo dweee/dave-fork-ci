@@ -65,3 +65,19 @@ class CommonCaches(unittest.TestCase):
         for url in CACHE['PUBLIC']:
             self.assertIn(url, config)
         self.assertEqual(migration['migrate_document'](after)[0], after)
+
+    def test_policy_only_sync_supports_forgejo_and_step_overrides_without_credential_changes(self):
+        sync = runpy.run_path(str(ROOT/'ci/sync-cache-workflows.py'))
+        document = {'jobs': {'build': {'runs-on': 'nix', 'steps': [
+            {'env': {'NIX_CONFIG': 'cores = 3\nsubstituters = https://cache.nixos.org/\n',
+                     'NIKS3_READ_NETRC': '${{ secrets.NIKS3_READ_NETRC }}'},
+             'run': 'nix-build ./default.nix'}]}}}
+        after, _ = sync['apply'](document)
+        for config in [after['jobs']['build']['env']['NIX_CONFIG'],
+                       after['jobs']['build']['steps'][0]['env']['NIX_CONFIG']]:
+            for url in CACHE['PUBLIC']:
+                self.assertIn(url, config)
+        self.assertEqual(after['jobs']['build']['steps'][0]['env']['NIKS3_READ_NETRC'],
+                         '${{ secrets.NIKS3_READ_NETRC }}')
+        self.assertNotIn('permissions', after['jobs']['build'])
+        self.assertEqual(sync['apply'](after)[0], after)
