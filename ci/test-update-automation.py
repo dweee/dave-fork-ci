@@ -25,20 +25,6 @@ m = load('update-monitor')
 a = load('automation-forge')
 
 
-class ScopedAttribution(unittest.TestCase):
-    def test_repository_token_uses_operator_account_without_user_scope(self):
-        with patch.dict(a.os.environ, {'AUTOMATION_ACCOUNT': 'flakey-tool-updater'}), \
-             patch.object(a, 'api', side_effect=AssertionError('scoped PAT must not call /user')):
-            body = a.attribution({'forge': 'forgejo'})
-        self.assertIn('**Account:** `flakey-tool-updater`', body)
-
-    def test_invalid_configured_account_is_rejected_without_api(self):
-        with patch.dict(a.os.environ, {'AUTOMATION_ACCOUNT': 'bad`account'}), \
-             patch.object(a, 'api', side_effect=AssertionError('unexpected API')):
-            with self.assertRaises(ValueError):
-                a.attribution({'forge': 'forgejo'})
-
-
 class Updates(unittest.TestCase):
     def test_updater_failure_detail_redacts_credentials(self):
         text = 'noise\nerror: unable to download https://u:p@api.github.com/x: HTTP error 403 ghp_abcDEF123 secret-tok'

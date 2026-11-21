@@ -39,8 +39,8 @@ class EnsureAccess(unittest.TestCase):
     def test_missing_collaborator_is_granted_write(self):
         code, out, err, calls = run(['--repository', 'd/vacwatch'], [{'permission': 'none'}, None])
         self.assertEqual(code, 0)
-        self.assertIn('d/vacwatch: flakey-tool-updater write access granted', out)
-        self.assertEqual(calls[1], ('PUT', '/repos/d/vacwatch/collaborators/flakey-tool-updater', {'permission': 'write'}))
+        self.assertIn('d/vacwatch: flakey-updater write access granted', out)
+        self.assertEqual(calls[1], ('PUT', '/repos/d/vacwatch/collaborators/flakey-updater', {'permission': 'write'}))
 
     def test_not_found_permission_counts_as_none(self):
         code, out, _, calls = run(['--repository', 'd/vacwatch'], [http(404), None])
@@ -65,8 +65,8 @@ class EnsureAccess(unittest.TestCase):
         code, out, _, calls = run(['--check', '--repository', 'd/a', '--repository', 'd/b'],
                                   [{'permission': 'none'}, {'permission': 'write'}])
         self.assertEqual(code, 1)
-        self.assertIn('d/a: flakey-tool-updater write access missing', out)
-        self.assertIn('d/b: flakey-tool-updater write access ok', out)
+        self.assertIn('d/a: flakey-updater write access missing', out)
+        self.assertIn('d/b: flakey-updater write access ok', out)
         self.assertEqual({c[0] for c in calls}, {'GET'})
 
     def test_failure_is_clear_continues_and_never_prints_the_token(self):
@@ -74,7 +74,7 @@ class EnsureAccess(unittest.TestCase):
                                     [http(403), {'permission': 'write'}])
         self.assertEqual(code, 1)
         self.assertIn('d/a: HTTP 403, the token needs repository admin rights', err)
-        self.assertIn('d/b: flakey-tool-updater write access ok', out)
+        self.assertIn('d/b: flakey-updater write access ok', out)
         self.assertNotIn(TOKEN, out + err)
 
     def test_missing_token_and_bad_input_fail_before_any_request(self):
