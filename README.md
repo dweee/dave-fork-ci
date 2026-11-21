@@ -114,7 +114,7 @@ valid paths; unrelated store outputs and unfinished derivations are excluded.
 These uploads happen even when the selected build fails later. A substituted
 dependency can be omitted as an export root only when a listed public cache
 serves a fresh narinfo with matching metadata and a valid signature from its
-paired key, and answers a HEAD request for the NAR on the same HTTPS origin.
+paired key, and serves the first NAR byte to a ranged GET on the same HTTPS origin.
 The selector keeps content-addressed narinfo because Nix can accept it without
 a signature. It also keeps outputs whose probes fail or exceed the deadline.
 Some public caches evict old paths, so a later rebuild may have to build an

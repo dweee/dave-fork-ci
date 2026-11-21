@@ -1,4 +1,7 @@
+import contextlib
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -15,6 +18,31 @@ C='/nix/store/'+'c'*32+'-unrelated-store-member'
 
 
 class Retention(unittest.TestCase):
+    def test_command_stdout_contains_only_the_wrapped_build_output(self):
+        entry = {'narHash': 'sha256-' + 'A'*43 + '=', 'narSize': 12, 'references': [],
+                 'signatures': ['cache.nixos.org-1:fixture']}
+        for served in (True, False):
+            with self.subTest(served=served), tempfile.TemporaryDirectory() as temporary:
+                manifest = Path(temporary) / 'outputs'
+                argv = ['retain', '--target', '.#sample', '--manifest', str(manifest),
+                        '--', 'nix', 'build', '.#sample', '--print-out-paths']
+                output, log = io.StringIO(), io.StringIO()
+                build = subprocess.CompletedProcess([], 0, A + '\n')
+                with patch.object(sys, 'argv', argv), patch.dict(os.environ, {}, clear=True), \
+                        contextlib.redirect_stdout(output), contextlib.redirect_stderr(log), \
+                        patch.object(retention.public, 'derivation'), patch.object(retention.public, 'runtime'), \
+                        patch.object(retention.channel, 'derivation_output_paths', return_value={A, B}), \
+                        patch.object(retention.channel, 'run', return_value=json.dumps({B: entry})), \
+                        patch.object(retention.channel, 'public_narinfo', return_value=b'wire',
+                                     side_effect=None if served else TimeoutError), \
+                        patch.object(retention.channel, 'info', return_value={B: entry}), \
+                        patch.object(retention.channel, 'verify_signatures'), \
+                        patch.object(retention.subprocess, 'run', return_value=build):
+                    self.assertEqual(retention.main(), 0)
+                self.assertEqual(output.getvalue(), build.stdout)
+                self.assertEqual(manifest.read_text(), A + '\n' if served else A + '\n' + B + '\n')
+                self.assertIn('Public caches serve 1' if served else 'kept 1 paths', log.getvalue())
+
     def test_admission_is_rechecked_after_graph_selection_and_before_build(self):
         from types import SimpleNamespace
         events=[]

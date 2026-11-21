@@ -18,7 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from threading import Lock, Thread
+from threading import Condition, Thread
 import time
 from urllib.error import HTTPError
 from urllib.parse import urljoin, urlsplit
@@ -958,6 +958,7 @@ def derivation_output_paths(target, env):
 
 PUBLIC_PROBE_SECONDS = 60
 PUBLIC_ORIGIN_FAILURES = 8
+PUBLIC_ORIGIN_WORKERS = 4
 
 
 def probe_time_left(deadline):
@@ -974,12 +975,8 @@ def same_public_origin(url, origin):
 
 class PublicCacheRedirect(HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, message, headers, url):
-        if not same_public_origin(url, request.full_url):
-            return None
-        redirected = super().redirect_request(request, fp, code, message, headers, url)
-        if redirected is not None:
-            redirected.method = request.get_method()
-        return redirected
+        # urllib drains followed redirect bodies without a byte limit.
+        return None
 
 
 def public_narinfo(origin, key, path, deadline):
@@ -1004,14 +1001,22 @@ def public_narinfo(origin, key, path, deadline):
         if (len(urls) != 1 or not re.fullmatch(r'URL: [!-~]+', urls[0]) or '\\' in urls[0]
                 or not any(line.startswith(prefix) for line in lines)):
             return None
-        # A HEAD response counts only for NARs served by the same cache.
+        # Check that a GET can read the NAR from the same cache.
         nar = urljoin(base, urls[0][5:])
         if not same_public_origin(nar, origin):
             return None
         checking_nar = True
-        with open_public(Request(nar, method='HEAD', headers=headers),
+        with open_public(Request(nar, headers=dict(headers, Range='bytes=0-0')),
                          timeout=min(5, probe_time_left(deadline))) as response:
-            if response.status != 200 or not same_public_origin(response.url, origin):
+            if not same_public_origin(response.url, origin):
+                return None
+            if response.status == 206:
+                if (not re.fullmatch(r'bytes 0-0/[1-9][0-9]*', response.headers.get('Content-Range', ''))
+                        or response.headers.get('Content-Length', '1') != '1'):
+                    return None
+            elif response.status != 200:
+                return None
+            if len(response.read(1)) != 1:
                 return None
         return data
     except HTTPError as error:
@@ -1025,36 +1030,48 @@ def public_narinfo(origin, key, path, deadline):
 
 
 def probe_public_caches(work, deadline):
-    pending = SimpleQueue()
+    pending = {}
     results = SimpleQueue()
     failures = {}
-    lock = Lock()
+    active = {}
+    available = Condition()
     for item in work:
-        pending.put(item)
+        pending.setdefault(item[0], []).append(item)
 
     def probe():
-        while time.monotonic() < deadline:
-            try:
-                item = pending.get_nowait()
-            except Empty:
-                return
-            origin, _, _ = item
-            with lock:
-                stopped = failures.get(origin, 0) >= PUBLIC_ORIGIN_FAILURES
-            if stopped:
-                results.put((item, None, 'cutoff'))
-                continue
+        while True:
+            with available:
+                while pending and time.monotonic() < deadline:
+                    origin = next((url for url in pending if active.get(url, 0) < PUBLIC_ORIGIN_WORKERS), None)
+                    if origin is not None:
+                        break
+                    available.wait(timeout=max(0, deadline - time.monotonic()))
+                else:
+                    return
+                items = pending[origin]
+                item = items.pop()
+                if not items:
+                    del pending[origin]
+                    if not pending:
+                        available.notify_all()
+                if failures.get(origin, 0) >= PUBLIC_ORIGIN_FAILURES:
+                    results.put((item, None, 'cutoff'))
+                    continue
+                active[origin] = active.get(origin, 0) + 1
+            narinfo = reason = None
             try:
                 narinfo = public_narinfo(*item, deadline)
             except (OSError, HTTPException):
-                with lock:
-                    failures[origin] = failures.get(origin, 0) + 1
-                results.put((item, None, 'unavailable'))
-            else:
-                with lock:
-                    if failures.get(origin, 0) < PUBLIC_ORIGIN_FAILURES:
+                reason = 'unavailable'
+            finally:
+                with available:
+                    if reason == 'unavailable':
+                        failures[origin] = failures.get(origin, 0) + 1
+                    elif failures.get(origin, 0) < PUBLIC_ORIGIN_FAILURES:
                         failures[origin] = 0
-                results.put((item, narinfo, None))
+                    active[origin] -= 1
+                    available.notify()
+            results.put((item, narinfo, reason))
 
     # DNS and slow reads can outlive socket timeouts. Only the caller stages
     # results, and it never joins workers or waits past the shared deadline.
@@ -1083,7 +1100,7 @@ def served_build_outputs(entries, env):
         # Recorded signers only schedule probes. They never prove availability.
         work.update((origin, key, path) for origin, key in caches.items() if key.split(':', 1)[0] in names)
     if not caches and entries:
-        print(f'Public-cache probing unavailable; kept {len(entries)} paths.', flush=True)
+        print(f'Public-cache probing unavailable; kept {len(entries)} paths.', file=sys.stderr, flush=True)
     if not work:
         return set()
 
@@ -1118,7 +1135,7 @@ def served_build_outputs(entries, env):
         # signature requirement, so conservatively retain CA records.
         for cache, key, paths in staged.values():
             reader = remote_env(env, directory)
-            reader['NIX_CONFIG'] += '\ntrusted-public-keys = ' + key + '\n'
+            reader['NIX_CONFIG'] += '\nsecret-key-files =\ntrusted-public-keys = ' + key + '\n'
             for batch in batches(paths, METADATA_BATCH):
                 try:
                     found = info(batch, reader, cache.as_uri(), deadline=deadline)
@@ -1136,10 +1153,12 @@ def served_build_outputs(entries, env):
     overdue.update(path for _, _, path in remaining)
     limited = (overdue | cutoff) - served
     if limited:
-        print(f'Public-cache probe deadline or origin cutoff reached; kept {len(limited)} paths.', flush=True)
+        print(f'Public-cache probe deadline or origin cutoff reached; kept {len(limited)} paths.',
+              file=sys.stderr, flush=True)
     failed = (unavailable | cutoff | overdue) - served
     if failed:
-        print(f'Public-cache probing unavailable or incomplete; kept {len(failed)} paths.', flush=True)
+        print(f'Public-cache probing unavailable or incomplete; kept {len(failed)} paths.',
+              file=sys.stderr, flush=True)
     return served
 
 
@@ -1165,7 +1184,7 @@ def completed_build_outputs(candidates, env):
             entries[path] = entry
     served = served_build_outputs(entries, env)
     if served:
-        print(f'Public caches serve {len(served)} completed dependency outputs', flush=True)
+        print(f'Public caches serve {len(served)} completed dependency outputs', file=sys.stderr, flush=True)
     return sorted(entries.keys() - served)
 
 
