@@ -78,7 +78,8 @@ class MigrationSemantics(unittest.TestCase):
         native['run']=original
         after,_=migration.migrate_document(before)
         run=next(s['run'] for s in after['jobs']['build']['steps'] if s.get('name')=='Build')
-        self.assertIn(original.rstrip(),run)
+        expected = original.replace('> outputs.txt\n', '> outputs.txt\ncp outputs.txt "$RETAINED_BUILD_ROOTS"\n')
+        self.assertIn(expected.rstrip(),run)
         self.assertIn('--target "$target" --target "$check"',run)
         self.assertIn('--script "$RUNNER_TEMP/native-cache-build.sh"',run)
         self.assertEqual(migration.migrate_document(after)[0],after)

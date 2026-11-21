@@ -69,27 +69,30 @@ class Retention(unittest.TestCase):
                     patch.object(retention.channel,'derivation_output_paths',side_effect=[{A},{B}]), \
                     patch.object(retention.channel,'completed_build_outputs',return_value=[A,B]), \
                     patch.object(retention.public,'runtime'), \
+                    patch.object(retention.channel,'run',side_effect=retention.channel.CommandFailure('missing package')), \
                     patch.object(retention.subprocess,'run',return_value=subprocess.CompletedProcess([],7,'')) as run:
                 self.assertEqual(retention.main(),7)
             self.assertEqual(manifest.read_text(),A+'\n'+B+'\n')
             self.assertEqual(run.call_args.args[0],['bash','-eu','-o','pipefail',str(script)])
 
-    def test_successful_script_package_is_retained_even_when_publicly_served(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory=Path(temporary);script=directory/'build.sh';script.write_text('exit 0\n')
-            manifest=directory/'cache'
-            argv=['retain','--target','.#package','--target','.#check','--manifest',str(manifest),'--script',str(script)]
-            with patch.object(sys,'argv',argv),patch.dict(os.environ,{},clear=True), \
-                    patch.object(retention.public,'derivation'), \
-                    patch.object(retention.channel,'derivation_output_paths',side_effect=[{A},{B}]), \
-                    patch.object(retention.channel,'completed_build_outputs',return_value=[]), \
-                    patch.object(retention.channel,'run',return_value=A) as path_info, \
-                    patch.object(retention.public,'runtime'), \
-                    patch.object(retention.subprocess,'run',return_value=subprocess.CompletedProcess([],0)):
-                self.assertEqual(retention.main(),0)
-            self.assertEqual(manifest.read_text(),A+'\n')
-            self.assertEqual(path_info.call_args.args[:2],('nix','path-info'))
-            self.assertTrue(path_info.call_args.args[-1].endswith('#package'))
+    def test_script_retains_recorded_package_even_when_the_check_fails(self):
+        for status in (0, 7):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                script = directory / 'build.sh'
+                script.write_text(f'printf "%s\\n" "{A}" > "$RETAINED_BUILD_ROOTS"\nexit {status}\n')
+                manifest = directory / 'cache'
+                argv = ['retain', '--target', '.#package', '--target', '.#check',
+                        '--manifest', str(manifest), '--script', str(script)]
+                with patch.object(sys, 'argv', argv), \
+                        patch.object(retention.public, 'derivation'), \
+                        patch.object(retention.channel, 'derivation_output_paths', side_effect=[{A}, {B}]), \
+                        patch.object(retention.channel, 'completed_build_outputs', return_value=[]), \
+                        patch.object(retention.channel, 'run') as path_info, \
+                        patch.object(retention.public, 'runtime'):
+                    self.assertEqual(retention.main(), status)
+                self.assertEqual(manifest.read_text(), A + '\n')
+                path_info.assert_not_called()
 
     def test_successful_root_is_retained_even_when_upstream_signed(self):
         with tempfile.TemporaryDirectory() as temporary:

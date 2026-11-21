@@ -93,20 +93,31 @@ def main():
         # immutable admission command immediately before starting new work.
         if collector.env.get('NATIVE_BUILD_ADMISSION_COMMAND'):
             channel.native_build_admission(collector.env)
-        result = subprocess.run(command, env=collector.env,
-                                stdout=None if args.script is not None else subprocess.PIPE, text=True)
-        if result.returncode == 0:
-            # Generated scripts build the package first and run its check
-            # separately. Resolve the successful package in the local store.
-            output = result.stdout if args.script is None else channel.run(
-                'nix', 'path-info', '--option', 'substituters', '',
-                '--option', 'extra-substituters', '', targets[0], env=collector.env)
+        if args.script is None:
+            result = subprocess.run(command, env=collector.env, stdout=subprocess.PIPE, text=True)
+            output = result.stdout if result.returncode == 0 else None
+        else:
+            with tempfile.TemporaryDirectory(prefix='retained-build-roots-') as directory:
+                recorded = Path(directory) / 'outputs'
+                result = subprocess.run(command, env=dict(collector.env, RETAINED_BUILD_ROOTS=str(recorded)),
+                                        text=True)
+                output = recorded.read_text() if recorded.is_file() else None
+            if output is None:
+                # Older generated scripts do not record the package output.
+                # Keep their selected package if it already exists locally.
+                try:
+                    output = channel.run('nix', 'path-info', '--option', 'substituters', '',
+                                         '--option', 'extra-substituters', '', targets[0], env=collector.env)
+                except channel.CommandFailure:
+                    if result.returncode == 0:
+                        raise
+        if output is not None:
             paths = output.splitlines()
             if not paths or any(not channel.STORE.fullmatch(path) or path.endswith('.drv') for path in paths):
                 raise ValueError('Missing selected build outputs')
             roots = paths
             if args.script is None:
-                sys.stdout.write(result.stdout)
+                sys.stdout.write(output)
         return result.returncode
     finally:
         collector.retain(roots)
