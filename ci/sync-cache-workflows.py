@@ -24,8 +24,7 @@ def apply(document):
         if not CACHE['nix_job'](steps):
             continue
         if any('configure-attic-read.py' in str(step.get('run', '')) for step in steps):
-            manual.append(str(name)+': legacy Attic reader: migrate to canonical Niks3 reader in owning repository before sync')
-            continue
+            manual.append(str(name)+': legacy Attic reader: public policy applied; migrate reader to canonical Niks3 in owning repository')
         inherited = document.get('env', {}).get('NIX_CONFIG', '')
         original = copy.deepcopy(job)
         try:

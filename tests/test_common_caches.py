@@ -130,10 +130,14 @@ class CommonCaches(unittest.TestCase):
         self.assertEqual(after['jobs']['build']['env']['NIX_CONFIG'].strip(), '')
         self.assertEqual(sync['apply'](after)[0], after)
 
-    def test_legacy_attic_reader_is_a_manual_migration(self):
+    def test_legacy_attic_reader_gets_public_policy_and_migration_note(self):
         sync = runpy.run_path(str(ROOT/'ci/sync-cache-workflows.py'))
         doc = {'jobs': {'build': {'steps': [{'run': 'python3 ci/configure-attic-read.py'},
                                            {'run': 'nix build .#foo'}]}}}
         after, manual = sync['apply'](doc)
-        self.assertEqual(after, doc)
+        for url in CACHE['PUBLIC']:
+            self.assertIn(url, after['jobs']['build']['env']['NIX_CONFIG'])
+        self.assertEqual(after['jobs']['build']['steps'], doc['jobs']['build']['steps'])
+        self.assertNotIn('attic', after['jobs']['build']['env']['NIX_CONFIG'])
+        self.assertEqual(sync['apply'](after)[0], after)
         self.assertIn('legacy Attic reader', manual[0])

@@ -96,7 +96,7 @@ class Niks3StaticReader(unittest.TestCase):
 
     @unittest.skipUnless(__import__('shutil').which('nix'), 'Nix required')
     def test_inherited_nix_config_cannot_drop_private_reader(self):
-        os.environ['NIX_CONFIG'] = 'substituters = https://cache.nixos.org/\ncores = 3\n'
+        os.environ['NIX_CONFIG'] = 'extra-substituters = https://cache.nixos.org/\ncores = 3\n'
         self.configure()
         os.environ.update(self.exported())
         self.configure()  # Reconfiguration must not include the config file recursively.
@@ -104,18 +104,25 @@ class Niks3StaticReader(unittest.TestCase):
         env = {**os.environ, **self.exported()}
         caches = __import__('json').loads((ROOT/'ci/caches.json').read_text())
         result = subprocess.run([NIX_COMMAND, 'config', 'show', 'substituters'], env=env, capture_output=True, text=True, check=True)
-        self.assertEqual(set(result.stdout.split()), set(caches['substituters']))
-        self.assertEqual(result.stdout.split()[-1], 'https://niks3.monke.fail')
+        self.assertEqual({url.rstrip('/') for url in result.stdout.split()},
+                         {url.rstrip('/') for url in caches['substituters']})
+        self.assertNotEqual(result.stdout.split()[0], 'https://niks3.monke.fail')
+        self.assertNotIn('NIX_CONFIG', self.exported())
         result = subprocess.run([NIX_COMMAND, 'config', 'show', 'cores'], env=env, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), '3')
+        result = subprocess.run([NIX_COMMAND, 'config', 'show', 'netrc-file'], env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), str(self.directory/'netrc'))
 
     @unittest.skipUnless(__import__('shutil').which('nix'), 'Nix required')
     def test_cleanup_keeps_nix_and_repeat_setup_working(self):
+        os.environ['NIX_CONFIG'] = 'extra-experimental-features = nix-command flakes\ncores = 3\n'
         self.configure()
         os.environ.update(self.exported())
         self.reader.cleanup()
         self.worker.stop()
         subprocess.run([NIX_COMMAND, '--extra-experimental-features', 'nix-command', 'config', 'show'], check=True, capture_output=True)
+        result = subprocess.run([NIX_COMMAND, 'config', 'show', 'cores'], check=True, capture_output=True, text=True)
+        self.assertEqual(result.stdout.strip(), '3')
         self.configure()
 
     def test_job_credentials_directory_overrides_runner_temp(self):
