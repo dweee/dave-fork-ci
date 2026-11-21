@@ -95,12 +95,18 @@ def main():
             channel.native_build_admission(collector.env)
         result = subprocess.run(command, env=collector.env,
                                 stdout=None if args.script is not None else subprocess.PIPE, text=True)
-        if args.script is None and result.returncode == 0:
-            paths = result.stdout.splitlines()
+        if result.returncode == 0:
+            # Generated scripts build the package first and run its check
+            # separately. Resolve the successful package in the local store.
+            output = result.stdout if args.script is None else channel.run(
+                'nix', 'path-info', '--option', 'substituters', '',
+                '--option', 'extra-substituters', '', targets[0], env=collector.env)
+            paths = output.splitlines()
             if not paths or any(not channel.STORE.fullmatch(path) or path.endswith('.drv') for path in paths):
                 raise ValueError('Missing selected build outputs')
             roots = paths
-            sys.stdout.write(result.stdout)
+            if args.script is None:
+                sys.stdout.write(result.stdout)
         return result.returncode
     finally:
         collector.retain(roots)

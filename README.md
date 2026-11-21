@@ -111,10 +111,15 @@ Trusted owning-repository release channels also retain completed build-only
 dependencies from each selected package/check derivation graph. JSON v4 fixed
 output identities are resolved by Nix, then intersected with the local daemon’s
 valid paths; unrelated store outputs and unfinished derivations are excluded.
-These uploads happen even when the selected build fails later. Shared public
-cache signatures filter substituted outputs using local daemon metadata. This
-also applies to the isolated upstream-candidate and migrated native artifact
-workflows. Their separate cache manifests include completed selected graph
+These uploads happen even when the selected build fails later. A substituted
+dependency can be omitted as an export root only when a listed public cache
+serves a fresh narinfo with matching metadata and a valid signature from its
+paired key, and the NAR URL is reachable. If a lookup fails, the dependency is
+retained. Some public caches evict old paths, so a later rebuild may have to
+build an omitted dependency. This only affects build-time dependencies.
+Successful package roots and retained roots still export their complete runtime
+closures. This also applies to isolated upstream-candidate and migrated native
+artifact workflows. Their separate cache manifests include completed selected graph
 outputs after failure; archives keep the existing path/byte bounds and public
 guards. Builds have no writer, and publisher jobs import data without executing
 candidate programs. Channel promotion still requires every original build,

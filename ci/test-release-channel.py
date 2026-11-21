@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.error import HTTPError
 import tempfile
 import shutil
 import unittest
@@ -837,25 +839,106 @@ class BuildDependencies(unittest.TestCase):
         with patch.object(c, 'run', return_value=json.dumps({unrelated: ENTRY})):
             with self.assertRaises(ValueError): c.completed_build_outputs({A, B}, {})
 
-    def test_only_shared_public_signers_exclude_substituted_outputs(self):
-        cases = {
-            'cache.nixos.org-1:fixture': [],
-            'niks3.numtide.com-1:fixture': [],
-            'nix-community.cachix.org-1:fixture': [],
-            'cache.nixos-cuda.org:fixture': [],
-            'niks3.monke.fail-1:fixture': [A],
-            'lantian:fixture': [A],
-            'custom-public-cache-1:fixture': [A],
-            'cache.nixos.org-1': [A],
+    def test_public_cache_pairs_match_the_reviewed_substituters(self):
+        config = c.module('cache-config.py')
+        expected = {
+            'https://install.determinate.systems': 'cache.flakehub.com-3',
+            'https://cache.lix.systems': 'cache.lix.systems',
+            'https://nix-community.cachix.org': 'nix-community.cachix.org-1',
+            'https://cache.nixos.org/': 'cache.nixos.org-1',
+            'https://ai.cachix.org': 'ai.cachix.org-1',
+            'https://cache.numtide.com': 'niks3.numtide.com-1',
+            'https://codex-desktop-linux.cachix.org': 'codex-desktop-linux.cachix.org-1',
+            'https://nix-on-droid.cachix.org': 'nix-on-droid.cachix.org-1',
+            'https://virby-nix-darwin.cachix.org': 'virby-nix-darwin.cachix.org-1',
+            'https://cache.nixos-cuda.org': 'cache.nixos-cuda.org',
+            'https://cache.flox.dev': 'flox-cache-public-1',
         }
-        for signature, expected in cases.items():
-            with self.subTest(signature=signature):
-                entry = dict(ENTRY, signatures=[signature])
-                with patch.object(c, 'run', return_value=json.dumps({A: entry})):
-                    self.assertEqual(c.completed_build_outputs({A}, {}), expected)
-                entry['ultimate'] = True
-                with patch.object(c, 'run', return_value=json.dumps({A: entry})):
-                    self.assertEqual(c.completed_build_outputs({A}, {}), [A])
+        self.assertEqual(set(config.PUBLIC), set(expected))
+        self.assertEqual({url: key.split(':', 1)[0] for url, key in config.PUBLIC_CACHES.items()}, expected)
+
+    @staticmethod
+    def public_response(url, body=b''):
+        response = contextlib.closing(io.BytesIO(body))
+        response.thing.status = 200
+        response.thing.url = url
+        return response
+
+    def test_path_with_both_niks3_and_public_signatures_uses_live_public_proof(self):
+        local = dict(ENTRY, signatures=['niks3.monke.fail-1:fixture', 'niks3.numtide.com-1:fixture'])
+        origin = 'https://cache.numtide.com'
+        narinfo = (f'StorePath: {A}\nURL: nar/example.nar.zst\n'
+                   'Sig: niks3.numtide.com-1:fixture\nSig: niks3.monke.fail-1:fixture\nCA: fixture\n')
+        calls = []
+
+        def request(req, timeout):
+            calls.append((req.get_method(), req.full_url))
+            return self.public_response(req.full_url, narinfo.encode() if req.get_method() == 'GET' else b'')
+
+        def verify(paths, cache, reader):
+            self.assertEqual(paths, [A])
+            file = next(Path(cache.removeprefix('file://')).glob('*.narinfo'))
+            self.assertIn('Sig: niks3.numtide.com-1:fixture', file.read_text())
+            self.assertNotIn('Sig: niks3.monke.fail-1:', file.read_text())
+            self.assertNotIn('CA:', file.read_text())
+            self.assertTrue(reader['NIX_CONFIG'].splitlines()[-1].startswith('trusted-public-keys = niks3.numtide.com-1:'))
+
+        with patch.object(c, 'run', return_value=json.dumps({A: local})), \
+                patch.object(c, 'build_opener', return_value=SimpleNamespace(open=request)), \
+                patch.object(c, 'info', return_value={A: ENTRY}), \
+                patch.object(c, 'verify_signatures', side_effect=verify) as check:
+            self.assertEqual(c.completed_build_outputs({A}, {}), [])
+            check.assert_called_once()
+        self.assertEqual(calls, [('GET', origin + '/' + 'a'*32 + '.narinfo'),
+                                 ('HEAD', origin + '/nar/example.nar.zst')])
+
+    def test_unauthorized_or_missing_public_narinfo_is_retained(self):
+        local = dict(ENTRY, signatures=['cache.flakehub.com-3:fixture'])
+        for status in (401, 403, 404):
+            with self.subTest(status=status), patch.object(c, 'run', return_value=json.dumps({A: local})), \
+                    patch.object(c, 'build_opener') as opener, patch.object(c, 'verify_signatures') as verify:
+                url = 'https://install.determinate.systems/' + 'a'*32 + '.narinfo'
+                opener.return_value.open.side_effect = HTTPError(url, status, 'fixture', {}, None)
+                self.assertEqual(c.completed_build_outputs({A}, {}), [A])
+                self.assertEqual(opener.return_value.open.call_args.args[0].full_url, url)
+                verify.assert_not_called()
+
+    def test_public_lookup_skips_ineligible_outputs_and_preserves_uncovered_references(self):
+        entries = (
+            dict(ENTRY, signatures=['hydra.nixos.org-1:fixture', 'niks3.monke.fail-1:fixture', 'lantian:fixture']),
+            dict(ENTRY, signatures=['cache.nixos.org-1:fixture'], ultimate=True),
+            dict(ENTRY, signatures=['cache.nixos.org-1:fixture'], references=[B]),
+        )
+        for entry in entries:
+            with self.subTest(entry=entry), patch.object(c, 'run', return_value=json.dumps({A: entry})), \
+                    patch.object(c, 'build_opener') as opener:
+                self.assertEqual(c.completed_build_outputs({A}, {}), [A])
+                opener.assert_not_called()
+
+    @unittest.skipUnless(shutil.which('nix'), 'Nix required for signed cache fixture')
+    def test_public_proof_cryptographically_binds_local_metadata(self):
+        env = dict(os.environ)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / 'fixture'
+            artifact.write_text('Signed public build output fixture\n')
+            path = c.run('nix', 'store', 'add-path', str(artifact))
+            c.run('nix-store', '--generate-binary-cache-key', 'public-fixture', str(root/'secret'), str(root/'public'))
+            c.run('nix', 'store', 'sign', '--key-file', str(root/'secret'), path)
+            c.run('nix', 'copy', '--to', (root/'cache').as_uri(), path)
+            signed = next((root/'cache').glob('*.narinfo')).read_text()
+            key = (root/'public').read_text().strip()
+            entry = dict(c.info([path], env)[path], ultimate=False)
+            for narinfo, expected, actual in (
+                (signed, {path}, entry),
+                (signed.replace('Sig: public-fixture:', 'Sig: public-fixture:A'), set(), entry),
+                (signed, set(), dict(entry, narSize=entry['narSize'] + 1)),
+            ):
+                def request(req, timeout):
+                    return self.public_response(req.full_url, narinfo.encode() if req.get_method() == 'GET' else b'')
+                with patch.object(c, 'module', return_value=SimpleNamespace(PUBLIC_CACHES={'https://example.org': key})), \
+                        patch.object(c, 'build_opener', return_value=SimpleNamespace(open=request)):
+                    self.assertEqual(c.served_build_outputs({path: actual}, env), expected)
 
     def test_later_build_failure_still_publishes_completed_dependencies_and_propagates(self):
         graph = {'/nix/store/' + 'c'*32 + '-root.drv': {'outputs': {'out': {'path': A}, 'dev': {'path': B}}}}

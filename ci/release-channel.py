@@ -8,6 +8,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
+from http.client import HTTPException
 import importlib.util
 import json
 import os
@@ -17,6 +18,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.error import HTTPError
+from urllib.parse import urljoin, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 # Never write bytecode: consumers once tracked ci/__pycache__ and the rewrite
 # dirtied the checkout that the clean-checkout checks require.
@@ -947,14 +951,111 @@ def derivation_output_paths(target, env):
     return paths
 
 
+class PublicCacheRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, url):
+        target = urlsplit(url)
+        if target.scheme != 'https' or target.username is not None:
+            return None
+        redirected = super().redirect_request(request, fp, code, message, headers, url)
+        if redirected is not None:
+            redirected.method = request.get_method()
+        return redirected
+
+
+def public_narinfo(origin, key, path):
+    """Fetch fresh metadata and check that the cache can serve its NAR."""
+    base = origin.rstrip('/') + '/'
+    name = path.removeprefix('/nix/store/')[:32] + '.narinfo'
+    open_public = build_opener(PublicCacheRedirect()).open
+    headers = {'Cache-Control': 'no-cache', 'User-Agent': 'dave-fork-ci/1'}
+    try:
+        with open_public(Request(base + name, headers=headers), timeout=5) as response:
+            if response.status != 200 or urlsplit(response.url).scheme != 'https':
+                return None
+            data = response.read(64 * 1024 + 1)
+        if len(data) > 64 * 1024:
+            return None
+        lines = data.decode().splitlines()
+        if [line[11:] for line in lines if line.startswith('StorePath: ')] != [path]:
+            return None
+        urls = [line[5:] for line in lines if line.startswith('URL: ')]
+        prefix = 'Sig: ' + key.split(':', 1)[0] + ':'
+        if len(urls) != 1 or not any(line.startswith(prefix) for line in lines):
+            return None
+        # NARs are normally relative URLs and may redirect to object storage.
+        # Send no credentials and read headers only.
+        nar = urlsplit(urljoin(base, urls[0]))
+        if nar.scheme != 'https' or nar.username is not None:
+            return None
+        with open_public(Request(nar.geturl(), method='HEAD', headers=headers), timeout=5) as response:
+            if response.status != 200 or urlsplit(response.url).scheme != 'https':
+                return None
+        # Nix also trusts content-addressed paths without a signature. Strip
+        # that assertion and every other signature from this verification copy.
+        return '\n'.join(line for line in lines
+                         if not line.startswith(('CA:', 'Sig:')) or line.startswith(prefix)) + '\n'
+    except HTTPError as error:
+        error.close()
+        return None
+    except (OSError, ValueError, HTTPException):
+        return None
+
+
+def served_build_outputs(entries, env):
+    """Prove availability with bounded, read-only probes and Nix signature checks."""
+    caches = module('cache-config.py').PUBLIC_CACHES
+    work = []
+    for path, entry in entries.items():
+        if entry.get('ultimate') is True or not set(entry['references']) <= entries.keys():
+            # A reference outside this inventory could otherwise lose its only
+            # copy. Keep this root and its recursive closure in the transfer.
+            continue
+        names = {sig.partition(':')[0] for sig in entry.get('signatures', []) if ':' in sig}
+        # Recorded signers only schedule probes. They never prove availability.
+        work.extend((origin, key, path) for origin, key in caches.items() if key.split(':', 1)[0] in names)
+    if not work:
+        return set()
+
+    served = set()
+    with tempfile.TemporaryDirectory(prefix='public-build-cache-') as directory:
+        staged = {}
+        with ThreadPoolExecutor(max_workers=METADATA_WORKERS) as pool:
+            for (origin, key, path), narinfo in zip(work, pool.map(lambda args: public_narinfo(*args), work)):
+                if narinfo is None:
+                    continue
+                if origin not in staged:
+                    cache = Path(directory) / str(len(staged))
+                    cache.mkdir()
+                    (cache / 'nix-cache-info').write_text('StoreDir: /nix/store\n')
+                    staged[origin] = (cache, key, [])
+                cache, _, paths = staged[origin]
+                (cache / (path.removeprefix('/nix/store/')[:32] + '.narinfo')).write_text(narinfo)
+                paths.append(path)
+        # Use Nix's parser and verifier against the exact bytes just received.
+        # The file cache isolates verification from network, netrc and stale
+        # metadata. Each batch trusts only the key paired with its endpoint.
+        for cache, key, paths in staged.values():
+            reader = remote_env(env, directory)
+            reader['NIX_CONFIG'] += '\ntrusted-public-keys = ' + key + '\n'
+            for batch in batches(paths, METADATA_BATCH):
+                try:
+                    found = info(batch, reader, cache.as_uri())
+                    matching = [path for path in batch if found.get(path) is not None
+                                and metadata(found[path]) == metadata(entries[path])]
+                    if matching:
+                        verify_signatures(matching, cache.as_uri(), reader)
+                        served.update(matching)
+                except (CommandFailure, ValueError):
+                    # An unverified batch stays eligible for publication.
+                    continue
+    return served
+
+
 def completed_build_outputs(candidates, env):
     # Query only graph candidates in the local daemon. Invalid paths are null
     # in the pinned Nix JSON API; no graph output is realized or substituted.
-    public_signers = module('cache-config.py').PUBLIC_SIGNERS
-    candidates = sorted(candidates)
-    selected = []
-    for index in range(0, len(candidates), 128):
-        batch = candidates[index:index+128]
+    entries = {}
+    for batch in batches(candidates, 128):
         document = json.loads(run('nix', 'path-info', '--json',
                                   '--option', 'substituters', '', '--option', 'extra-substituters', '',
                                   *batch, env=env))
@@ -962,21 +1063,18 @@ def completed_build_outputs(candidates, env):
             document = {entry['path']: entry for entry in document if entry is not None}
         if not isinstance(document, dict) or set(document) - set(batch):
             raise ValueError('Invalid local output inventory')
-        for path, entry in sorted(document.items()):
+        for path, entry in document.items():
             if entry is None:
                 continue
             metadata(entry)
             signatures = entry.get('signatures', [])
             if not isinstance(signatures, list) or any(not isinstance(sig, str) for sig in signatures):
                 raise ValueError('Invalid output signatures')
-            # Use the daemon's recorded signer to select substituted outputs.
-            # Locally built, unsigned and private-cache outputs still need
-            # retention. Publication verification is independent of this filter.
-            if entry.get('ultimate') is not True and any(
-                    sig.partition(':')[0] in public_signers for sig in signatures if ':' in sig):
-                continue
-            selected.append(path)
-    return selected
+            entries[path] = entry
+    served = served_build_outputs(entries, env)
+    if served:
+        print(f'Public caches serve {len(served)} completed dependency outputs', flush=True)
+    return sorted(entries.keys() - served)
 
 
 def build_with_dependencies(attr, rules, system, visibility, env, publish_env, outputs, label):
