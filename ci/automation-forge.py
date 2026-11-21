@@ -97,7 +97,13 @@ def attribution(rules):
     if rules['forge'] != 'forgejo':
         return ''
     phase('read-poster-identity')
-    account = api(rules, 'GET', '/user')['login']
+    # Repository-targeted Forgejo PATs cannot call /user. The rotation
+    # operator provisions this non-secret login together with UPDATE_TOKEN.
+    account = os.environ.get('AUTOMATION_ACCOUNT', '')
+    if not account:
+        account = api(rules, 'GET', '/user')['login']  # legacy unscoped credentials
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', account):
+        raise ValueError('Invalid operator-provisioned automation account')
     return ('**Posted by:** `Forgejo Actions` · **Content:** `none (no model used)` · '
             '**Model:** `none (no model used)` · **Account:** `' + account +
             '` · **Evidence:** `none (no model used)` · **Role:** `report`\n\n')

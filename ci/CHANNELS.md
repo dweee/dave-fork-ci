@@ -63,9 +63,11 @@ Required repository configuration:
 - Enable Actions and permit the repository workflow token to create branches,
   tags, PRs and monitoring issues. Protect `tested`/`stable` against human or
   unrelated automation writes; allow only the release workflow identity.
-- Forgejo requires repository-scoped `FLAKEY_NIKS3_READ_NETRC` and
-  `FLAKEY_NIKS3_WRITE_TOKEN`. Niks3 is its substitute and verified release cache;
-  existing Attic secrets and historical objects remain.
+- Forgejo release builds and promotion require `TOOLS_CACHE_PUBLICATION=enabled`.
+  Provision only a repository-only tool-cache `TOOLS_NIKS3_WRITE_TOKEN` and the
+  private reader `FLAKEY_NIKS3_READ_NETRC`. Missing/disabled publication skips
+  release builds and promotion; it produces no release/cache evidence. Independent
+  PR checks remain available. Never provision a fleet writer to a tool repository.
 - GitHub requires no Niks3 static secrets: trusted publishers request a write grant through
   OIDC with audience `https://niks3.monke.fail`. Trusted readers use the separate
   read-only audience `https://niks3.monke.fail/read` and `/oidc` cache object route,
@@ -114,10 +116,14 @@ Required repository configuration:
   `owner/name`: release channels at a minute of the UTC day (00:00-23:59), input updates at a
   minute in each six-hour slot starting at hour 0-5 UTC. The offset is stable, so
   repositories no longer fire in the same minute.
-- On Forgejo, `UPDATE_TOKEN` belongs to the restricted `flakey-updater` account. A
-  restricted account has no implicit repository access (the API answers 404), so
-  the owner must grant it write access to this repository once, with an admin
-  token: `ci/ensure-updater-access.py --repository OWNER/NAME` in dave-fork-ci.
+- For owning tool repositories on Forgejo, `UPDATE_TOKEN` must belong to the
+  restricted `flakey-tool-updater` account. A restricted account has no implicit
+  repository access. Grant only the owning repository using the access helper.
+  Never grant a tool updater fleet/control repository access. Use a distinct
+  single-repository token where the server supports repository-targeted PATs.
+  Provision `UPDATE_ACCOUNT` with the matching account and fence updater intake
+  with `UPDATE_AUTOMATION_ENABLED=disabled` during credential changes. Migration
+  and recovery belong in the private operator runbook, outside this generator.
 - Forgejo may supply `GH_READ_TOKEN` for authenticated public metadata reads.
   Private input readers belong only on Forgejo; configure them before input jobs.
 

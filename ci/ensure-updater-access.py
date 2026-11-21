@@ -24,7 +24,7 @@ from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 DEFAULT_HOST = 'https://git.monke.fail'
-DEFAULT_USER = 'flakey-updater'
+DEFAULT_USER = 'flakey-tool-updater'
 RANK = {'none': 0, 'read': 1, 'write': 2, 'admin': 3, 'owner': 4}
 NAME = re.compile(r'[A-Za-z0-9._-]+')
 
