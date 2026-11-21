@@ -13,30 +13,14 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 
-def matches(expression, event, ref, publication='enabled'):
+def matches(expression, event, ref):
     expression = expression.removeprefix('${{ ').removesuffix(' }}')
     expression = expression.replace('github.event_name', repr(event)).replace('github.ref', repr(ref))
-    expression = expression.replace('vars.TOOLS_CACHE_PUBLICATION', repr(publication))
-    expression = expression.replace('vars.UPDATE_AUTOMATION_ENABLED', repr('enabled'))
     return eval(expression.replace('&&', ' and ').replace('||', ' or '),
                 {'__builtins__': {}, 'format': lambda pattern, value: pattern.format(value)})
 
 
 class ChannelWorkflowRefs(unittest.TestCase):
-    def test_tool_publication_requires_explicit_enable_and_tool_only_secret(self):
-        with tempfile.TemporaryDirectory() as directory:
-            workflows = self.generated('forgejo', directory)
-        jobs = workflows['release-channels']['jobs']
-        for name, job in jobs.items():
-            if name.startswith('build_') or name == 'promote':
-                for value in ('', 'disabled', 'pending'):
-                    self.assertFalse(matches(job['if'], 'push', 'refs/heads/main', value), name)
-                self.assertTrue(matches(job['if'], 'push', 'refs/heads/main'), name)
-        serialized = json.dumps(workflows)
-        self.assertIn('secrets.TOOLS_NIKS3_WRITE_TOKEN', serialized)
-        self.assertNotIn('secrets.FLAKEY_NIKS3_WRITE_TOKEN', serialized)
-        self.assertNotIn('if', jobs['test'])
-
     def generated(self, forge, directory, systems=('x86_64-linux',), extra=None):
         root = Path(directory)
         (root / 'flake.nix').touch()

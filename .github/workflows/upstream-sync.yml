@@ -128,7 +128,11 @@ jobs:
             experimental-features = nix-command flakes parallel-eval
             eval-cores = 2
             accept-flake-config = false
-            substituters = https://cache.nixos.org
+      - name: Configure common public caches
+        run: |
+          echo "NIX_CONFIG<<FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
+          python3 controller/ci/cache-config.py >> "$GITHUB_ENV"
+          echo "FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
       - name: Verify Determinate client and daemon
         run: |
           nix --version | grep -F 'Determinate Nix 3.24.1'
@@ -139,7 +143,7 @@ jobs:
           CANDIDATE: ${{ needs.prepare.outputs.candidate }}
         run: |
           scanner=$(nix build --out-link "$RUNNER_TEMP/gitleaks" --print-out-paths --max-jobs 0 --builders '' \
-            --option accept-flake-config false --option substituters https://cache.nixos.org \
+            --option accept-flake-config false \
             github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0#gitleaks)
           cat > "$RUNNER_TEMP/scanner.toml" << 'EOF'
           [extend]
@@ -227,7 +231,11 @@ jobs:
             experimental-features = nix-command flakes parallel-eval
             eval-cores = 2
             accept-flake-config = false
-            substituters = https://cache.nixos.org
+      - name: Configure common public caches
+        run: |
+          echo "NIX_CONFIG<<FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
+          python3 controller/ci/cache-config.py >> "$GITHUB_ENV"
+          echo "FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
       - name: Verify Determinate client and daemon
         run: |
           nix --version | grep -F 'Determinate Nix 3.24.1'

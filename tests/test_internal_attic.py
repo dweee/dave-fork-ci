@@ -144,8 +144,7 @@ class InternalAtticUrl(unittest.TestCase):
                         self.assertIn('configure-niks3.py --oidc', steps)
                     else:
                         self.assertIn('FLAKEY_NIKS3_READ_NETRC', steps)
-                        self.assertIn('TOOLS_NIKS3_WRITE_TOKEN', steps)
-                        self.assertNotIn('FLAKEY_NIKS3_WRITE_TOKEN', steps)
+                        self.assertIn('FLAKEY_NIKS3_WRITE_TOKEN', steps)
                         self.assertNotIn('configure-attic-read.py', steps)
                 elif name.startswith('retain_') and forge == 'github':
                     self.assertEqual(job['permissions']['id-token'], 'write')

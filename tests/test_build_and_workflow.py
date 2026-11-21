@@ -41,7 +41,6 @@ class BuildAndWorkflowTests(unittest.TestCase):
                  patch.object(build.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 build.main()
             args = call.call_args_list[1].args[0]
-            self.assertEqual(args[args.index('extra-substituters') + 1], endpoint)
             self.assertEqual(args[args.index('http2') + 1], 'false')
             env = call.call_args_list[1].kwargs['env']
             self.assertIn('extra-substituters = ' + endpoint, env['NIX_CONFIG'])

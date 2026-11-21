@@ -11,6 +11,9 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 import re
+import runpy
+
+CACHE = runpy.run_path(str(Path(__file__).resolve().parents[1] / "ci/cache-config.py"))
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fork_ci import Blocked, validate_policy
@@ -90,12 +93,11 @@ def main():
             'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE']}
     if any(os.environ.get(key) for key in ['ATTIC_TOKEN', 'FLAKEY_ATTIC_TOKEN', 'GH_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE']):
         raise Blocked('Build jobs must not receive publication credentials')
+    env['NIX_CONFIG'] = env.get('NIX_CONFIG', '') + '\n' + CACHE['nix_config']()
     substituter = public_cache(env)
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.source, env=env).strip()
     flags = ['--no-update-lock-file', '--no-write-lock-file',
-             '--option', 'accept-flake-config', 'false', '--option', 'builders', '',
-             '--option', 'substituters', 'https://cache.nixos.org',
-             '--option', 'extra-substituters', substituter]
+             '--option', 'accept-flake-config', 'false', '--option', 'builders', '']
     if substituter:
         flags += ['--option', 'http2', env.get('ATTIC_HTTP2', 'true')]
     packages = ['.#packages.' + args.system + '.' + name for name in row['packages']]

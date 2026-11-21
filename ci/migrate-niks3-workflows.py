@@ -12,6 +12,9 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import runpy
+
+CACHE = runpy.run_path(str(Path(__file__).with_name("cache-config.py")))
 
 
 KEY = 'niks3.monke.fail-1:q13GqiZgAxx7SyoLZInXoJjviZMOdNpfG03xs0VUD2M='
@@ -234,6 +237,20 @@ def migrate_document(document, controller_revision=None):
                 del job['secrets']
             permissions(document, job)
         steps = job.get('steps', [])
+        if CACHE['nix_job'](steps):
+            inherited = document.get('env', {}).get('NIX_CONFIG', '')
+            try:
+                config = CACHE['transform'](job.get('env', {}).get('NIX_CONFIG', inherited))
+                if any(CACHE['installer_field'](step) for step in steps):
+                    config = CACHE['without_cache'](config)
+                    if config.strip() or inherited.strip():
+                        job.setdefault('env', {})['NIX_CONFIG'] = config+'\n'
+                    else:
+                        job.get('env', {}).pop('NIX_CONFIG', None)
+                else:
+                    job.setdefault('env', {})['NIX_CONFIG'] = config
+            except ValueError as error:
+                raise MigrationError(str(job_name)+': '+str(error)) from error
         if not isinstance(steps, list):
             raise MigrationError('Expected step list: ' + str(job_name))
         rewritten, removed_ids, has_reader, has_publisher = [], [], False, False
@@ -313,6 +330,13 @@ def migrate_document(document, controller_revision=None):
                 if 'ci/build-cache-only.py' in run:
                     raise MigrationError('ci/build-cache-only.py requires manual credential/publication repair: ' + str(job_name))
                 raise MigrationError('Unrecognized credential-bearing step requires manual repair: ' + str(job_name) + ': ' + str(step.get('name', run)))
+            # Install actions without an existing cache stanza need the same policy.
+            action = str(step.get('uses', '')).split('@', 1)[0]
+            field = ('nix_conf' if action == 'nixbuild/nix-quick-install-action' else
+                     'extra-conf' if action in {'DeterminateSystems/determinate-nix-action',
+                                               'DeterminateSystems/nix-installer-action'} else None)
+            if field:
+                step.setdefault('with', {}).setdefault(field, '')
             for field in ('extra-conf', 'nix_conf'):
                 settings = step.get('with', {})
                 if not isinstance(settings, dict) or not isinstance(settings.get(field), str):
@@ -324,7 +348,10 @@ def migrate_document(document, controller_revision=None):
                     config = re.sub(pattern, lambda match: match[1] + (KEY if variable == 'ATTIC_PUBLIC_KEY' else ''), config)
                     if 'vars.' + variable in config:
                         raise MigrationError('Mixed Attic Nix configuration requires manual repair')
-                settings[field] = config
+                try:
+                    settings[field] = CACHE['transform'](config)
+                except ValueError as error:
+                    raise MigrationError(str(job_name)+': '+field+': '+str(error)) from error
             rewritten.append(step)
         # Some native jobs only had an isolated publisher and never read either
         # private cache. Add the reader to this known package-build shape too;

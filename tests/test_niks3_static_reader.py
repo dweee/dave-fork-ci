@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "ci/configure-niks3.py"
 READER = "machine niks3.monke.fail login fixture password synthetic-read-secret"
 WRITER = "W" * 48
+NIX_COMMAND = __import__("shutil").which("nix")
 
 
 def load_reader():
@@ -92,6 +93,30 @@ class Niks3StaticReader(unittest.TestCase):
         self.assertNotIn("synthetic-read-secret", (self.root / "github-env").read_text())
         # Only the OIDC reader needs a refresh worker.
         self.popen.assert_not_called()
+
+    @unittest.skipUnless(__import__('shutil').which('nix'), 'Nix required')
+    def test_inherited_nix_config_cannot_drop_private_reader(self):
+        os.environ['NIX_CONFIG'] = 'substituters = https://cache.nixos.org/\ncores = 3\n'
+        self.configure()
+        os.environ.update(self.exported())
+        self.configure()  # Reconfiguration must not include the config file recursively.
+        self.worker.stop()  # Real Nix client; the refresh-worker mock patches subprocess.Popen.
+        env = {**os.environ, **self.exported()}
+        caches = __import__('json').loads((ROOT/'ci/caches.json').read_text())
+        result = subprocess.run([NIX_COMMAND, 'config', 'show', 'substituters'], env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(set(result.stdout.split()), set(caches['substituters']))
+        self.assertEqual(result.stdout.split()[-1], 'https://niks3.monke.fail')
+        result = subprocess.run([NIX_COMMAND, 'config', 'show', 'cores'], env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), '3')
+
+    @unittest.skipUnless(__import__('shutil').which('nix'), 'Nix required')
+    def test_cleanup_keeps_nix_and_repeat_setup_working(self):
+        self.configure()
+        os.environ.update(self.exported())
+        self.reader.cleanup()
+        self.worker.stop()
+        subprocess.run([NIX_COMMAND, '--extra-experimental-features', 'nix-command', 'config', 'show'], check=True, capture_output=True)
+        self.configure()
 
     def test_job_credentials_directory_overrides_runner_temp(self):
         target = self.root / "job-credentials"
