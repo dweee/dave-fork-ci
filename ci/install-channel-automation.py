@@ -284,7 +284,8 @@ def install(args):
                            'aarch64-darwin': 'darwin-aarch64', 'x86_64-darwin': 'darwin-x86_64'})[system], cache=True)
             native.update(needs=['test'], outputs={'proof': expr('steps.release.outputs.proof'),
                                                    'retention': expr('steps.release.outputs.retention')},
-                          **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
+                          **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref +
+                                        (" && vars.TOOLS_CACHE_PUBLICATION == 'enabled'" if not github else ''))})
             # Keep derivations serial to bound memory, while allowing the
             # Linux builders to use every CPU assigned to their runners. The
             # macOS runners have 7 GB for 3 cores, so they stay at one core.
@@ -316,7 +317,7 @@ def install(args):
                         step['run'] = step['run'].replace('configure-attic-read.py','configure-niks3.py')
                         if 'env' in step:
                             step['env'] = {'NIKS3_READ_NETRC': expr('secrets.FLAKEY_NIKS3_READ_NETRC'),
-                                           'NIKS3_WRITE_TOKEN': expr('secrets.FLAKEY_NIKS3_WRITE_TOKEN')}
+                                           'NIKS3_WRITE_TOKEN': expr('secrets.TOOLS_NIKS3_WRITE_TOKEN')}
                     elif 'release-channel.py build' in step.get('run', ''):
                         # Read-only ledger access for the retention pins.
                         step['env'] = {'SOURCE_TOKEN': expr('github.token')}
@@ -369,7 +370,8 @@ def install(args):
             manifests[system] = expr('needs.'+key+'.outputs.retention')
         promoter = job()
         promoter.update(needs=needed, permissions={'contents': 'write'},
-                        **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
+                        **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref +
+                                      (" && vars.TOOLS_CACHE_PUBLICATION == 'enabled'" if not github else ''))})
         promoter['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(runner=promoter['runs-on'])+[
             {'name': 'Atomically publish immutable release tag and channel',
              'env': {'CHANNEL_TOKEN': expr('secrets.CHANNEL_TOKEN || github.token'),
@@ -402,25 +404,26 @@ def install(args):
             'on': {'pull_request': {}, **({'workflow_dispatch': {}} if github else {})},
             'permissions': {'contents': 'read'}, 'jobs': {'test': pr_test}})
     monitor = job(None if github else 'nix-light')
-    monitor['if'] = expr(trusted_ref)
+    updater_gate = trusted_ref + (" && vars.UPDATE_AUTOMATION_ENABLED != 'disabled'" if not github else '')
+    monitor['if'] = expr(updater_gate)
     monitor['timeout-minutes'] = 120
     monitor['steps'] = checkout()+bootstrap(runner=monitor['runs-on'])+[
         {'name': 'Monitor manual package/file pins', 'id': 'monitor', 'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GH_READ_TOKEN'),
                     'MONITOR_TOKEN': expr('github.token') if not github else ''},
          'run': python('ci/update-monitor.py')},
         {'name': 'Maintain one version monitoring issue', 'if': expr('always()'),
-         'env': {'AUTOMATION_TOKEN': expr('secrets.UPDATE_TOKEN || github.token')},
+         'env': {'AUTOMATION_TOKEN': expr('secrets.UPDATE_TOKEN || github.token'), **({} if github else {'AUTOMATION_ACCOUNT': expr('vars.UPDATE_ACCOUNT')})},
          'run': python('ci/automation-forge.py report')}]
     jobs = {'monitor': monitor}
     if not source_only:
         updater = job(None if github else 'nix-light')
-        updater['if'] = expr(trusted_ref)
+        updater['if'] = expr(updater_gate)
         updater['timeout-minutes'] = 120
         updater['steps'] = checkout()+bootstrap(runner=updater['runs-on'])+[
             {'name': 'Resolve every tracked input and validate the exact candidate',
              'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GH_READ_TOKEN')},
              'run': python('ci/update-inputs.py')},
-            {'name': 'Open a review PR for changed pins', 'env': {'AUTOMATION_TOKEN': expr('secrets.UPDATE_TOKEN || github.token')},
+            {'name': 'Open a review PR for changed pins', 'env': {'AUTOMATION_TOKEN': expr('secrets.UPDATE_TOKEN || github.token'), **({} if github else {'AUTOMATION_ACCOUNT': expr('vars.UPDATE_ACCOUNT')})},
              'run': python('ci/automation-forge.py inputs')}]
         jobs['inputs'] = updater
     write('scheduled-updates.yml', {'name': 'Input and manual version monitoring',
@@ -504,9 +507,13 @@ Required repository configuration:
 - Enable Actions and permit the repository workflow token to create branches,
   tags, PRs and monitoring issues. Protect `tested`/`stable` against human or
   unrelated automation writes; allow only the release workflow identity.
-- Forgejo requires repository-scoped `FLAKEY_NIKS3_READ_NETRC` and
-  `FLAKEY_NIKS3_WRITE_TOKEN`. Niks3 is its substitute and verified release cache;
-  existing Attic secrets and historical objects remain.
+- Forgejo publication is disabled unless repository variable
+  `TOOLS_CACHE_PUBLICATION` is `enabled`. Regression and native PR checks remain
+  independent of that switch. Enable it only after installing a repository-only
+  `TOOLS_NIKS3_WRITE_TOKEN` for the tool cache and the private reader
+  `FLAKEY_NIKS3_READ_NETRC`. No fleet writer alias is accepted. Disabling skips
+  release builds and promotion; it does not produce release/cache evidence.
+  Existing Attic secrets and historical objects remain.
 - GitHub requires no Niks3 static secrets: trusted publishers request a write grant through
   OIDC with audience `https://niks3.monke.fail`. Trusted readers use the separate
   read-only audience `https://niks3.monke.fail/read` and `/oidc` cache object route,
@@ -555,10 +562,14 @@ Required repository configuration:
   `owner/name`: release channels at a minute of the UTC day (00:00-23:59), input updates at a
   minute in each six-hour slot starting at hour 0-5 UTC. The offset is stable, so
   repositories no longer fire in the same minute.
-- On Forgejo, `UPDATE_TOKEN` belongs to the restricted `flakey-updater` account. A
+- For owning tool repositories on Forgejo, `UPDATE_TOKEN` must belong to the restricted `flakey-tool-updater` account. A
   restricted account has no implicit repository access (the API answers 404), so
   the owner must grant it write access to this repository once, with an admin
   token: `ci/ensure-updater-access.py --repository OWNER/NAME` in dave-fork-ci.
+  Never grant a tool updater access to fleet/control repositories. On Forgejo versions supporting
+  repository-targeted PATs, each token must list only its one owning repository.
+  Migration, recovery and access restrictions belong to the private operator
+  runbook; this generator does not provision credentials or grant access.
 - Forgejo may supply `GH_READ_TOKEN` for authenticated public metadata reads.
   Private input readers belong only on Forgejo; configure them before input jobs.
 
