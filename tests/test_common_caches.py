@@ -44,3 +44,13 @@ class CommonCaches(unittest.TestCase):
         source = (ROOT/'.github/workflows/upstream-sync.yml').read_text()
         self.assertEqual(source.count('Configure common public caches'), source.count('source-tag: v3.24.1'))
         self.assertNotIn('--option substituters https://cache.nixos.org', source)
+
+    def test_native_install_without_extra_conf_gets_full_policy(self):
+        migration = runpy.run_path(str(ROOT/'ci/migrate-niks3-workflows.py'))
+        document = {'jobs': {'build': {'runs-on': 'macos-latest', 'steps': [
+            {'uses': 'DeterminateSystems/determinate-nix-action@fixture'}]}}}
+        after, _ = migration['migrate_document'](document)
+        config = after['jobs']['build']['steps'][0]['with']['extra-conf']
+        for url in CACHE['PUBLIC']:
+            self.assertIn(url, config)
+        self.assertEqual(migration['migrate_document'](after)[0], after)

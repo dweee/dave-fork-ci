@@ -316,6 +316,13 @@ def migrate_document(document, controller_revision=None):
                 if 'ci/build-cache-only.py' in run:
                     raise MigrationError('ci/build-cache-only.py requires manual credential/publication repair: ' + str(job_name))
                 raise MigrationError('Unrecognized credential-bearing step requires manual repair: ' + str(job_name) + ': ' + str(step.get('name', run)))
+            # Install actions without an existing cache stanza need the same policy.
+            action = str(step.get('uses', '')).split('@', 1)[0]
+            field = ('nix_conf' if action == 'nixbuild/nix-quick-install-action' else
+                     'extra-conf' if action in {'DeterminateSystems/determinate-nix-action',
+                                               'DeterminateSystems/nix-installer-action'} else None)
+            if field:
+                step.setdefault('with', {}).setdefault(field, '')
             for field in ('extra-conf', 'nix_conf'):
                 settings = step.get('with', {})
                 if not isinstance(settings, dict) or not isinstance(settings.get(field), str):
