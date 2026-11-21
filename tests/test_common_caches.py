@@ -54,3 +54,14 @@ class CommonCaches(unittest.TestCase):
         for url in CACHE['PUBLIC']:
             self.assertIn(url, config)
         self.assertEqual(migration['migrate_document'](after)[0], after)
+
+    def test_native_nix_command_gets_policy_without_install_action(self):
+        migration = runpy.run_path(str(ROOT/'ci/migrate-niks3-workflows.py'))
+        document = {'env': {'NIX_CONFIG': 'cores = 2\nsubstituters = https://cache.nixos.org/\n'},
+                    'jobs': {'build': {'runs-on': 'nix', 'steps': [{'run': 'nix build .#package'}]}}}
+        after, _ = migration['migrate_document'](document)
+        config = after['jobs']['build']['env']['NIX_CONFIG']
+        self.assertIn('cores = 2\n', config)
+        for url in CACHE['PUBLIC']:
+            self.assertIn(url, config)
+        self.assertEqual(migration['migrate_document'](after)[0], after)

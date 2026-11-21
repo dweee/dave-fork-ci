@@ -237,6 +237,17 @@ def migrate_document(document, controller_revision=None):
                 del job['secrets']
             permissions(document, job)
         steps = job.get('steps', [])
+        nix_job = isinstance(steps, list) and any(
+            'nix' in str(step.get('uses', '')).split('@', 1)[0].lower()
+            or re.search(r'\bnix(?:-shell|-store)?\s', str(step.get('run', '')))
+            for step in steps if isinstance(step, dict))
+        if nix_job:
+            inherited = document.get('env', {}).get('NIX_CONFIG', '')
+            config = job.get('env', {}).get('NIX_CONFIG', inherited)
+            if not isinstance(config, str) or '${{' in config:
+                raise MigrationError('Dynamic NIX_CONFIG requires manual review: ' + str(job_name))
+            config = re.sub(r'(?m)^(?:extra-)?(?:substituters|trusted-substituters|trusted-public-keys)\s*=.*\n?', '', config)
+            job.setdefault('env', {})['NIX_CONFIG'] = config.rstrip() + '\n' + CACHE_CONF
         if not isinstance(steps, list):
             raise MigrationError('Expected step list: ' + str(job_name))
         rewritten, removed_ids, has_reader, has_publisher = [], [], False, False
