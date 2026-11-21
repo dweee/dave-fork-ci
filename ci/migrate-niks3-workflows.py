@@ -12,6 +12,9 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import runpy
+
+CACHE_CONF = runpy.run_path(str(Path(__file__).with_name("cache-config.py")))["nix_config"]()
 
 
 KEY = 'niks3.monke.fail-1:q13GqiZgAxx7SyoLZInXoJjviZMOdNpfG03xs0VUD2M='
@@ -324,7 +327,8 @@ def migrate_document(document, controller_revision=None):
                     config = re.sub(pattern, lambda match: match[1] + (KEY if variable == 'ATTIC_PUBLIC_KEY' else ''), config)
                     if 'vars.' + variable in config:
                         raise MigrationError('Mixed Attic Nix configuration requires manual repair')
-                settings[field] = config
+                config = re.sub(r'(?m)^(?:extra-)?(?:substituters|trusted-substituters|trusted-public-keys)\s*=.*\n?', '', config)
+                settings[field] = config.rstrip() + '\n' + CACHE_CONF
             rewritten.append(step)
         # Some native jobs only had an isolated publisher and never read either
         # private cache. Add the reader to this known package-build shape too;

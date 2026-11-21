@@ -11,6 +11,9 @@ import json
 import re
 from pathlib import Path
 import shutil
+import runpy
+
+CACHE_CONF = runpy.run_path(str(Path(__file__).with_name('cache-config.py')))['nix_config']()
 
 def multiline(dumper, value):
     return dumper.represent_scalar('tag:yaml.org,2002:str', value, style='|' if '\n' in value else None)
@@ -39,7 +42,7 @@ INTERNAL_ATTIC = 'http://172.29.0.1:8080'
 # is the whole installer change; the helpers already accept this origin.
 TAILNET_ATTIC = 'http://icicle.eel-ling.ts.net:8080'
 CACHE_SERVERS = {'nix': INTERNAL_ATTIC}
-HELPERS = ['release-channel.py', 'test-release-channel.py', 'update-inputs.py',
+HELPERS = ['caches.json', 'cache-config.py', 'release-channel.py', 'test-release-channel.py', 'update-inputs.py',
            'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-attic-read.py',
            'configure-niks3.py', 'push-niks3.py', 'test-push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh',
            'retain-build-outputs.py', 'test-retain-build-outputs.py', 'transfer-attic.py', 'test-transfer-attic.py']
@@ -49,7 +52,7 @@ HELPERS = ['release-channel.py', 'test-release-channel.py', 'update-inputs.py',
 # cache and CDN errors instead of stalling a job for hours.
 NIX_TRANSPORT_CONF = 'connect-timeout = 20\nstalled-download-timeout = 120\ndownload-attempts = 5\n'
 NIX_CONF_FORGEJO = ('experimental-features = nix-command flakes\naccept-flake-config = false\n'
-                    'sandbox = false\nfilter-syscalls = false\n' + NIX_TRANSPORT_CONF)
+                    'sandbox = false\nfilter-syscalls = false\n' + NIX_TRANSPORT_CONF + CACHE_CONF)
 
 
 def expr(value):
@@ -218,7 +221,7 @@ def install(args):
                      "nix store info --store daemon --json\nprintf 'NIX_REMOTE=daemon\\n' >> \"$GITHUB_ENV\""}]
 
         intel = "runner.os == 'macOS' && runner.arch == 'X64'"
-        common = 'accept-flake-config = false\nmax-jobs = 1\ncores = '+str(cores)+'\n'
+        common = 'accept-flake-config = false\nmax-jobs = 1\ncores = '+str(cores)+'\n' + CACHE_CONF
         return [
             {'uses': INSTALL, 'if': expr('!('+intel+')'),
              'with': {'source-tag': 'v3.24.1', 'summarize': False, 'kvm': False,
