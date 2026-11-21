@@ -13,7 +13,7 @@
   "install-niks3.sh": "55a2f49ee72b9cc24485b31710ecade5cb53f29116bf6141ebf879faeeb852a8",
   "retain-build-outputs.py": "4e9c63dad92e4b93c4c318ba61b101c38291a2153940236d8e36fc071a59e64c",
   "test-retain-build-outputs.py": "9716cb798958b6f20f48fd7f1bd6c0b5d551fdf5147d18dea916a1c5b361d8df",
-  "transfer-attic.py": "59dd605f1f61dc90f24d9259825055cd016a361f1f38d85983e678edf88498a4",
+  "transfer-attic.py": "1c6801636bd79107ed7c0294cf0d7c27e79ca33394474d453c439bff3a535f23",
   "test-transfer-attic.py": "22b88cb1a352b5b130dd259f00733f373c50bb64c52913fdde22c8db9d58c13d",
   "caches.json": "5a4b74c7bf7d9815d9cde39492e570a29f4f27533b3a74a7490ac63de4b577d0",
   "cache-config.py": "7fe4b74ce7997f050689f32627a250e2ca6ea8154ae2709a286c92e02f2626ab"
