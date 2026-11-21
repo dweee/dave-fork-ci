@@ -34,10 +34,15 @@ def apply(document):
             continue
         inherited = document.get('env', {}).get('NIX_CONFIG', '')
         job.setdefault('env', {})['NIX_CONFIG'] = config(job.get('env', {}).get('NIX_CONFIG', inherited))
+        effective = document.get('env', {}) | job.get('env', {})
+        if str(effective.get('CI_NIX_DAEMON_MANAGED')) == '1':
+            job['env']['NIX_CONFIG'] += 'extra-substituters = https://niks3.monke.fail\n'
         for step in steps:
             env = step.get('env', {})
             if 'NIX_CONFIG' in env:
                 env['NIX_CONFIG'] = config(env['NIX_CONFIG'])
+                if str(effective.get('CI_NIX_DAEMON_MANAGED')) == '1':
+                    env['NIX_CONFIG'] += 'extra-substituters = https://niks3.monke.fail\n'
             action = str(step.get('uses', '')).split('@', 1)[0]
             field = ('nix_conf' if action == 'nixbuild/nix-quick-install-action' else
                      'extra-conf' if action in {'DeterminateSystems/determinate-nix-action',
@@ -59,6 +64,8 @@ def main():
     args = parser.parse_args()
     migration = runpy.run_path(str(HERE/'migrate-niks3-workflows.py'))
     folder = args.directory/('.github/workflows' if args.forge == 'github' else '.forgejo/workflows')
+    if args.forge == 'forgejo' and not folder.is_dir():
+        folder = args.directory/'.github/workflows'  # Forgejo fallback when .forgejo is absent.
     planned=[];manual=[]
     for path in sorted(folder.glob('*.y*ml')):
         if path.is_symlink():

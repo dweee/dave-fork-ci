@@ -81,3 +81,13 @@ class CommonCaches(unittest.TestCase):
                          '${{ secrets.NIKS3_READ_NETRC }}')
         self.assertNotIn('permissions', after['jobs']['build'])
         self.assertEqual(sync['apply'](after)[0], after)
+
+    def test_managed_daemon_keeps_private_reader_without_credential_forwarding(self):
+        sync = runpy.run_path(str(ROOT/'ci/sync-cache-workflows.py'))
+        document = {'env': {'CI_NIX_DAEMON_MANAGED': '1'}, 'jobs': {
+            'build': {'steps': [{'run': 'nix build .#package'}]}}}
+        after, _ = sync['apply'](document)
+        config = after['jobs']['build']['env']['NIX_CONFIG']
+        self.assertIn('extra-substituters = https://niks3.monke.fail\n', config)
+        self.assertNotIn('netrc-file', config)
+        self.assertEqual(sync['apply'](after)[0], after)
