@@ -291,7 +291,7 @@ class MigrationSemantics(unittest.TestCase):
         settings['extra-conf'] = 'max-jobs = 1\nextra-substituters = ${{ vars.ATTIC_SUBSTITUTER }}\nextra-trusted-public-keys = ${{ vars.ATTIC_PUBLIC_KEY }}\n'
         after, _ = migration.migrate_document(document)
         config = after['jobs']['build']['steps'][0]['with']['extra-conf']
-        self.assertEqual(config, 'max-jobs = 1\n' + migration.CACHE_CONF)
+        self.assertEqual(config, 'max-jobs = 1\n' + migration.CACHE['nix_config']())
         settings['extra-conf'] = 'extra-substituters = https://other.example ${{ vars.ATTIC_SUBSTITUTER }}\n'
         with self.assertRaisesRegex(migration.MigrationError, 'Mixed Attic Nix configuration'):
             migration.migrate_document(document)
