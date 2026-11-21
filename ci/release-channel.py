@@ -959,6 +959,7 @@ def derivation_output_paths(target, env):
 PUBLIC_PROBE_SECONDS = 60
 PUBLIC_ORIGIN_FAILURES = 8
 PUBLIC_ORIGIN_WORKERS = 12
+NAR_COMPRESSION_MAGIC = {'zstd': b'\x28', 'xz': b'\xfd', 'bzip2': b'B', 'none': b'\x0d'}
 
 
 def probe_time_left(deadline):
@@ -979,8 +980,12 @@ class PublicCacheRedirect(HTTPRedirectHandler):
         return None
 
 
+class NarProbeMiss(Exception):
+    """The cache did not provide usable evidence that the NAR is available."""
+
+
 def public_narinfo(origin, key, path, deadline):
-    """Return unchanged narinfo bytes, or a miss. Raise on cache outages."""
+    """Return unchanged narinfo bytes, or None for a narinfo miss."""
     base = origin.rstrip('/') + '/'
     name = path.removeprefix('/nix/store/')[:32] + '.narinfo'
     open_public = build_opener(PublicCacheRedirect()).open
@@ -1002,28 +1007,40 @@ def public_narinfo(origin, key, path, deadline):
                 or not any(line.startswith(prefix) for line in lines)):
             return None
         sizes = [line for line in lines if line.startswith('FileSize:')]
-        if len(sizes) != 1 or not re.fullmatch(r'FileSize: [1-9][0-9]*', sizes[0]):
-            return None
-        expected_range = 'bytes 0-0/' + sizes[0].removeprefix('FileSize: ')
+        magic = None
+        if sizes:
+            if len(sizes) != 1 or not re.fullmatch(r'FileSize: [1-9][0-9]*', sizes[0]):
+                raise NarProbeMiss
+            expected_total = sizes[0].removeprefix('FileSize: ')
+        else:
+            compression = [line.removeprefix('Compression: ') for line in lines if line.startswith('Compression:')]
+            if len(compression) != 1 or compression[0] not in NAR_COMPRESSION_MAGIC:
+                raise NarProbeMiss
+            magic = NAR_COMPRESSION_MAGIC[compression[0]]
+            expected_total = r'[1-9][0-9]*'
+        expected_range = 'bytes 0-0/' + expected_total
         # Check that a ranged GET can read the matching NAR from the same cache.
         nar = urljoin(base, urls[0][5:])
         if not same_public_origin(nar, origin):
-            return None
+            raise NarProbeMiss
         checking_nar = True
         with open_public(Request(nar, headers=dict(headers, Range='bytes=0-0')),
                          timeout=min(5, probe_time_left(deadline))) as response:
             if (response.status != 206 or not same_public_origin(response.url, origin)
-                    or response.headers.get('Content-Range') != expected_range
+                    or not re.fullmatch(expected_range, response.headers.get('Content-Range', ''))
                     or response.headers.get('Content-Length', '1') != '1'):
-                return None
-            if len(response.read(1)) != 1:
-                return None
+                raise NarProbeMiss
+            first_byte = response.read(1)
+            if len(first_byte) != 1 or (magic is not None and first_byte != magic):
+                raise NarProbeMiss
         return data
     except HTTPError as error:
         error.close()
         if ((checking_nar and error.code == 404) or error.code in {401, 403, 408, 429}
                 or 500 <= error.code < 600):
             raise OSError('public cache unavailable') from None
+        if checking_nar:
+            raise NarProbeMiss from None
         return None
     except ValueError:
         return None
@@ -1061,6 +1078,8 @@ def probe_public_caches(work, deadline):
             narinfo = reason = None
             try:
                 narinfo = public_narinfo(*item, deadline)
+            except NarProbeMiss:
+                reason = 'nar-miss'
             except (OSError, HTTPException):
                 reason = 'unavailable'
             finally:
@@ -1108,6 +1127,7 @@ def served_build_outputs(entries, env):
     overdue = set()
     unavailable = set()
     cutoff = set()
+    nar_misses = set()
     remaining = work.copy()
     deadline = time.monotonic() + PUBLIC_PROBE_SECONDS
     # Reserve time to verify responses even when one origin hangs.
@@ -1121,6 +1141,8 @@ def served_build_outputs(entries, env):
                 cutoff.add(path)
             elif reason == 'unavailable':
                 unavailable.add(path)
+            elif reason == 'nar-miss':
+                nar_misses.add(path)
             if narinfo is None:
                 continue
             if origin not in staged:
@@ -1159,6 +1181,9 @@ def served_build_outputs(entries, env):
     if failed:
         print(f'Public-cache probing unavailable or incomplete; kept {len(failed)} paths.',
               file=sys.stderr, flush=True)
+    nar_kept = nar_misses - served
+    if nar_kept:
+        print(f'Public NAR probe failed; kept {len(nar_kept)} paths.', file=sys.stderr, flush=True)
     return served
 
 

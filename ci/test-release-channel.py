@@ -960,12 +960,18 @@ class BuildDependencies(unittest.TestCase):
     def test_nar_probe_validates_range_and_bounds_the_read(self):
         origin = 'https://cache.numtide.com'
         key = 'niks3.numtide.com-1:fixture'
-        without_size = f'StorePath: {A}\nURL: nar/example.nar.zst\nSig: {key}\n'.encode()
+        base = f'StorePath: {A}\nURL: nar/example.nar.zst\nSig: {key}\n'.encode()
+        without_size = base + b'Compression: zstd\n'
         wire = without_size + b'FileSize: 160\n'
         for narinfo_body, status, headers, body, expected in (
             (wire, 206, {'Content-Range': 'bytes 0-0/160'}, b'x', wire),
             (wire, 206, {'Content-Range': 'bytes 0-0/1'}, b'x', None),
-            (without_size, 206, {'Content-Range': 'bytes 0-0/160'}, b'x', None),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/160'}, b'\x28', without_size),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/71447'}, b'\x28', without_size),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/71447'}, b'<', None),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/0'}, b'\x28', None),
+            (base + b'Compression: unknown\n', 206, {'Content-Range': 'bytes 0-0/71447'}, b'\x28', None),
+            (base, 206, {'Content-Range': 'bytes 0-0/71447'}, b'\x28', None),
             (wire, 206, {'Content-Range': 'bytes 0-0/160'}, b'', None),
             (wire, 206, {'Content-Range': 'bytes 1-1/160'}, b'x', None),
             (wire, 206, {'Content-Range': 'bytes 0-0/160', 'Content-Length': '160'}, b'x', None),
@@ -974,18 +980,29 @@ class BuildDependencies(unittest.TestCase):
         ):
             response = self.public_response(origin + '/nar/example.nar.zst', body, status=status, headers=headers)
             narinfo = self.public_response(origin + '/fixture.narinfo', narinfo_body)
-            with self.subTest(status=status, headers=headers, body=body, has_size=narinfo_body == wire), \
+            with self.subTest(status=status, headers=headers, body=body, narinfo=narinfo_body), \
                     patch.object(response.thing, 'read', wraps=response.thing.read) as read, \
                     patch.object(c, 'build_opener') as opener:
                 opener.return_value.open.side_effect = [narinfo, response]
-                self.assertEqual(c.public_narinfo(origin, key, A, c.time.monotonic() + 5), expected)
-                if expected is not None:
+                item = (origin, key, A)
+                results = list(c.probe_public_caches([item], c.time.monotonic() + 5))
+                self.assertEqual(results, [(item, expected, 'nar-miss' if expected is None else None)])
+                if expected is not None or body == b'<':
                     read.assert_called_once_with(1)
-                if narinfo_body == wire:
+                if narinfo_body in (wire, without_size):
                     self.assertTrue(response.thing.closed)
                 else:
                     opener.return_value.open.assert_called_once()
                     response.thing.close()
+
+    def test_nar_probe_miss_logs_kept_paths_to_stderr(self):
+        local = dict(ENTRY, signatures=['niks3.numtide.com-1:fixture'])
+        stderr, stdout = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout), \
+                patch.object(c, 'public_narinfo', side_effect=c.NarProbeMiss):
+            self.assertEqual(c.served_build_outputs({A: local}, {}), set())
+        self.assertEqual(stderr.getvalue(), 'Public NAR probe failed; kept 1 paths.\n')
+        self.assertEqual(stdout.getvalue(), '')
 
     def test_public_redirects_are_misses(self):
         handler = c.PublicCacheRedirect()
