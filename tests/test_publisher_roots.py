@@ -87,7 +87,8 @@ class PublisherRoots(unittest.TestCase):
                             'NIKS3_AUTH_TOKEN_FILE':'synthetic-writer-file','NIKS3_WRITE_TOKEN':'synthetic-writer',
                             'GH_TOKEN':'synthetic-forge','ACTIONS_ID_TOKEN_REQUEST_TOKEN':'synthetic-request','NIKS3_NETRC_FILE':'readonly-fixture'}
             subprocess.run(['bash',str(ROOT/'ci/install-niks3.sh')],env=env,check=True)
-            self.assertEqual((root/'niks3-client').resolve(),client)
+            # macOS exposes /var through /private/var; compare canonical paths.
+            self.assertEqual((root/'niks3-client').resolve(),client.resolve())
             self.assertIn('NIKS3_BIN='+str(client)+'/bin/niks3',(root/'env').read_text())
 
     def test_bootstrap_retention_is_read_only_and_requires_an_explicit_flag(self):
