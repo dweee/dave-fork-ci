@@ -7,6 +7,13 @@ from pathlib import Path
 POLICY = json.loads(Path(__file__).with_name('caches.json').read_text())
 PUBLIC = [url for url in POLICY['substituters'] if url != 'https://niks3.monke.fail']
 KEYS = POLICY['trusted-public-keys']
+# These keys are trusted by Nix for other consumers of the shared policy.
+# The probe-only Lantian cache and our private Niks3 are not public sources
+# for the retained-output selector.
+PUBLIC_SIGNERS = {
+    key.split(':', 1)[0] for key in KEYS
+    if not key.startswith(('lantian:', 'niks3.monke.fail-', 'niks3.monke.fail:'))
+}
 
 def nix_config():
     return ('extra-substituters = ' + ' '.join(PUBLIC) + '\n'

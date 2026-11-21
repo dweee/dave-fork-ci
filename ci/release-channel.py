@@ -950,6 +950,7 @@ def derivation_output_paths(target, env):
 def completed_build_outputs(candidates, env):
     # Query only graph candidates in the local daemon. Invalid paths are null
     # in the pinned Nix JSON API; no graph output is realized or substituted.
+    public_signers = module('cache-config.py').PUBLIC_SIGNERS
     candidates = sorted(candidates)
     selected = []
     for index in range(0, len(candidates), 128):
@@ -968,10 +969,11 @@ def completed_build_outputs(candidates, env):
             signatures = entry.get('signatures', [])
             if not isinstance(signatures, list) or any(not isinstance(sig, str) for sig in signatures):
                 raise ValueError('Invalid output signatures')
-            # Keep the official-upstream signature convention: locally built or
-            # unsigned/custom-cache outputs need private publication. This is
-            # selection metadata, not an independent upstream cache proof.
-            if entry.get('ultimate') is not True and any(sig.startswith('cache.nixos.org-1:') for sig in signatures):
+            # Use the daemon's recorded signer to select substituted outputs.
+            # Locally built, unsigned and private-cache outputs still need
+            # retention. Publication verification is independent of this filter.
+            if entry.get('ultimate') is not True and any(
+                    sig.partition(':')[0] in public_signers for sig in signatures if ':' in sig):
                 continue
             selected.append(path)
     return selected

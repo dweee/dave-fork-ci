@@ -837,14 +837,25 @@ class BuildDependencies(unittest.TestCase):
         with patch.object(c, 'run', return_value=json.dumps({unrelated: ENTRY})):
             with self.assertRaises(ValueError): c.completed_build_outputs({A, B}, {})
 
-    def test_official_signed_substitutes_are_skipped_but_local_and_private_outputs_retained(self):
-        entries = {A: dict(ENTRY, signatures=['cache.nixos.org-1:fixture']),
-                   B: dict(ENTRY, signatures=['niks3.monke.fail-1:fixture'])}
-        with patch.object(c, 'run', return_value=json.dumps(entries)):
-            self.assertEqual(c.completed_build_outputs({A, B}, {}), [B])
-        entries[A]['ultimate'] = True
-        with patch.object(c, 'run', return_value=json.dumps(entries)):
-            self.assertEqual(c.completed_build_outputs({A, B}, {}), [A, B])
+    def test_only_shared_public_signers_exclude_substituted_outputs(self):
+        cases = {
+            'cache.nixos.org-1:fixture': [],
+            'niks3.numtide.com-1:fixture': [],
+            'nix-community.cachix.org-1:fixture': [],
+            'cache.nixos-cuda.org:fixture': [],
+            'niks3.monke.fail-1:fixture': [A],
+            'lantian:fixture': [A],
+            'custom-public-cache-1:fixture': [A],
+            'cache.nixos.org-1': [A],
+        }
+        for signature, expected in cases.items():
+            with self.subTest(signature=signature):
+                entry = dict(ENTRY, signatures=[signature])
+                with patch.object(c, 'run', return_value=json.dumps({A: entry})):
+                    self.assertEqual(c.completed_build_outputs({A}, {}), expected)
+                entry['ultimate'] = True
+                with patch.object(c, 'run', return_value=json.dumps({A: entry})):
+                    self.assertEqual(c.completed_build_outputs({A}, {}), [A])
 
     def test_later_build_failure_still_publishes_completed_dependencies_and_propagates(self):
         graph = {'/nix/store/' + 'c'*32 + '-root.drv': {'outputs': {'out': {'path': A}, 'dev': {'path': B}}}}

@@ -111,8 +111,8 @@ Trusted owning-repository release channels also retain completed build-only
 dependencies from each selected package/check derivation graph. JSON v4 fixed
 output identities are resolved by Nix, then intersected with the local daemon’s
 valid paths; unrelated store outputs and unfinished derivations are excluded.
-These uploads happen even when the selected build fails later. Official-cache
-signatures filter substituted upstream outputs using local metadata. This
+These uploads happen even when the selected build fails later. Shared public
+cache signatures filter substituted outputs using local daemon metadata. This
 also applies to the isolated upstream-candidate and migrated native artifact
 workflows. Their separate cache manifests include completed selected graph
 outputs after failure; archives keep the existing path/byte bounds and public

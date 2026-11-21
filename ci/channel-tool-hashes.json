@@ -1,6 +1,6 @@
 {
-  "release-channel.py": "b4cd444d28542e7ec3b221c6ceb97c62d6326e7ffc68f61754c8c2eb06faa1df",
-  "test-release-channel.py": "55342ee67f737385aed136ac8317a39708ddc3c1897af03465df22dfe29559e2",
+  "release-channel.py": "342c62d2e2a6f7119c0b06ed2b4812f62e13d966e95e2516d1160af5b090ebe2",
+  "test-release-channel.py": "33bfcfae025dd41b89580a1690771f7b2818fc4814b5d8db3250341277f0d25c",
   "update-inputs.py": "ce66ee5c77a8b731cee10390c4123b9e467cb376e2443343fdf724baaecfb66f",
   "update-monitor.py": "ff1867c18ef4f549a0d7f84eb828f6a3e44b1575d4d42113bca770ff06e09c74",
   "test-update-automation.py": "1487178f309969a8e54202cc685772512cff404bdd6ccc189abd759a49bb3f3c",
@@ -16,5 +16,5 @@
   "transfer-attic.py": "59dd605f1f61dc90f24d9259825055cd016a361f1f38d85983e678edf88498a4",
   "test-transfer-attic.py": "22b88cb1a352b5b130dd259f00733f373c50bb64c52913fdde22c8db9d58c13d",
   "caches.json": "5a4b74c7bf7d9815d9cde39492e570a29f4f27533b3a74a7490ac63de4b577d0",
-  "cache-config.py": "4a2cfb975e78a278926abb3a18164476bb9202df20437fa53e0c72419870e768"
+  "cache-config.py": "979d5411f251b58a4fa1d0dcfd0a8eb6b3c9909d7822ab3bd9e3cde3a48c3f24"
 }
