@@ -866,13 +866,13 @@ class BuildDependencies(unittest.TestCase):
         response.thing.headers = headers or {}
         return response
 
-    def public_nar_response(self, url):
-        return self.public_response(url, b'x', status=206, headers={'Content-Range': 'bytes 0-0/10'})
+    def public_nar_response(self, url, size):
+        return self.public_response(url, b'x', status=206, headers={'Content-Range': f'bytes 0-0/{size}'})
 
     def test_path_with_both_niks3_and_public_signatures_uses_live_public_proof(self):
         local = dict(ENTRY, signatures=['niks3.monke.fail-1:fixture', 'niks3.numtide.com-1:fixture'])
         origin = 'https://cache.numtide.com'
-        narinfo = (f'StorePath: {A}\nURL: nar/example.nar.zst\n'
+        narinfo = (f'StorePath: {A}\nURL: nar/example.nar.zst\nFileSize: 160\n'
                    'Sig: niks3.numtide.com-1:fixture\nSig: niks3.monke.fail-1:fixture\n')
         calls = []
 
@@ -880,7 +880,7 @@ class BuildDependencies(unittest.TestCase):
             byte_range = req.get_header('Range')
             calls.append((req.get_method(), req.full_url, byte_range))
             if byte_range is not None:
-                return self.public_nar_response(req.full_url)
+                return self.public_nar_response(req.full_url, 160)
             return self.public_response(req.full_url, narinfo.encode())
 
         def verify(paths, cache, reader, *, deadline):
@@ -912,7 +912,7 @@ class BuildDependencies(unittest.TestCase):
     def test_public_probe_rejections_keep_the_output(self):
         origin = 'https://cache.numtide.com'
         local = dict(ENTRY, signatures=['niks3.numtide.com-1:fixture'])
-        wire = f'StorePath: {A}\nURL: nar/example.nar.zst\nSig: niks3.numtide.com-1:fixture\n'.encode()
+        wire = f'StorePath: {A}\nURL: nar/example.nar.zst\nFileSize: 160\nSig: niks3.numtide.com-1:fixture\n'.encode()
         cases = [
             (wire.replace(A.encode(), B.encode()), None, 1),
             (wire.replace(b'Sig:', b'Comment:'), None, 1),
@@ -941,7 +941,7 @@ class BuildDependencies(unittest.TestCase):
 
     def test_head_success_does_not_hide_a_forbidden_nar_get(self):
         local = dict(ENTRY, signatures=['niks3.numtide.com-1:fixture'])
-        wire = f'StorePath: {A}\nURL: nar/example.nar.zst\nSig: niks3.numtide.com-1:fixture\n'.encode()
+        wire = f'StorePath: {A}\nURL: nar/example.nar.zst\nFileSize: 160\nSig: niks3.numtide.com-1:fixture\n'.encode()
 
         def request(req, timeout):
             if req.full_url.endswith('.narinfo'):
@@ -960,26 +960,32 @@ class BuildDependencies(unittest.TestCase):
     def test_nar_probe_validates_range_and_bounds_the_read(self):
         origin = 'https://cache.numtide.com'
         key = 'niks3.numtide.com-1:fixture'
-        wire = f'StorePath: {A}\nURL: nar/example.nar.zst\nSig: {key}\n'.encode()
-        for status, headers, body, expected in (
-            (206, {'Content-Range': 'bytes 0-0/10'}, b'x', wire),
-            (206, {'Content-Range': 'bytes 0-0/10'}, b'', None),
-            (206, {'Content-Range': 'bytes 1-1/10'}, b'x', None),
-            (206, {'Content-Range': 'bytes 0-0/10', 'Content-Length': '10'}, b'x', None),
-            (206, {}, b'x', None),
-            (200, {}, b'body larger than one byte', wire),
-            (200, {}, b'', None),
+        without_size = f'StorePath: {A}\nURL: nar/example.nar.zst\nSig: {key}\n'.encode()
+        wire = without_size + b'FileSize: 160\n'
+        for narinfo_body, status, headers, body, expected in (
+            (wire, 206, {'Content-Range': 'bytes 0-0/160'}, b'x', wire),
+            (wire, 206, {'Content-Range': 'bytes 0-0/1'}, b'x', None),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/160'}, b'x', None),
+            (wire, 206, {'Content-Range': 'bytes 0-0/160'}, b'', None),
+            (wire, 206, {'Content-Range': 'bytes 1-1/160'}, b'x', None),
+            (wire, 206, {'Content-Range': 'bytes 0-0/160', 'Content-Length': '160'}, b'x', None),
+            (wire, 206, {}, b'x', None),
+            (wire, 200, {'Content-Type': 'text/html', 'Content-Length': '12'}, b'<p>error</p>', None),
         ):
             response = self.public_response(origin + '/nar/example.nar.zst', body, status=status, headers=headers)
-            narinfo = self.public_response(origin + '/fixture.narinfo', wire)
-            with self.subTest(status=status, headers=headers, body=body), \
+            narinfo = self.public_response(origin + '/fixture.narinfo', narinfo_body)
+            with self.subTest(status=status, headers=headers, body=body, has_size=narinfo_body == wire), \
                     patch.object(response.thing, 'read', wraps=response.thing.read) as read, \
                     patch.object(c, 'build_opener') as opener:
                 opener.return_value.open.side_effect = [narinfo, response]
                 self.assertEqual(c.public_narinfo(origin, key, A, c.time.monotonic() + 5), expected)
                 if expected is not None:
                     read.assert_called_once_with(1)
-                self.assertTrue(response.thing.closed)
+                if narinfo_body == wire:
+                    self.assertTrue(response.thing.closed)
+                else:
+                    opener.return_value.open.assert_called_once()
+                    response.thing.close()
 
     def test_public_redirects_are_misses(self):
         handler = c.PublicCacheRedirect()
@@ -1087,6 +1093,8 @@ class BuildDependencies(unittest.TestCase):
             c.run('nix', 'store', 'sign', '--key-file', str(root/'secret'), path, env=env)
             c.run('nix', 'copy', '--to', (root/'cache').as_uri(), path, env=env)
             signed = next((root/'cache').glob('*.narinfo')).read_bytes()
+            size = next(line.removeprefix(b'FileSize: ').decode() for line in signed.splitlines()
+                        if line.startswith(b'FileSize: '))
             key = (root/'public').read_text().strip()
             entry = dict(c.info([path], env)[path], ultimate=False)
             # Signing this fixture does not require its content-address claim.
@@ -1114,7 +1122,7 @@ class BuildDependencies(unittest.TestCase):
             ):
                 def request(req, timeout):
                     if req.get_header('Range') is not None:
-                        return self.public_nar_response(req.full_url)
+                        return self.public_nar_response(req.full_url, size)
                     return self.public_response(req.full_url, narinfo)
                 with patch.object(c, 'module', return_value=SimpleNamespace(PUBLIC_CACHES={'https://example.org': key})), \
                         patch.object(c, 'build_opener', return_value=SimpleNamespace(open=request)):

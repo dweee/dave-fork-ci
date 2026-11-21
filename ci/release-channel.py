@@ -958,7 +958,7 @@ def derivation_output_paths(target, env):
 
 PUBLIC_PROBE_SECONDS = 60
 PUBLIC_ORIGIN_FAILURES = 8
-PUBLIC_ORIGIN_WORKERS = 4
+PUBLIC_ORIGIN_WORKERS = 12
 
 
 def probe_time_left(deadline):
@@ -1001,20 +1001,20 @@ def public_narinfo(origin, key, path, deadline):
         if (len(urls) != 1 or not re.fullmatch(r'URL: [!-~]+', urls[0]) or '\\' in urls[0]
                 or not any(line.startswith(prefix) for line in lines)):
             return None
-        # Check that a GET can read the NAR from the same cache.
+        sizes = [line for line in lines if line.startswith('FileSize:')]
+        if len(sizes) != 1 or not re.fullmatch(r'FileSize: [1-9][0-9]*', sizes[0]):
+            return None
+        expected_range = 'bytes 0-0/' + sizes[0].removeprefix('FileSize: ')
+        # Check that a ranged GET can read the matching NAR from the same cache.
         nar = urljoin(base, urls[0][5:])
         if not same_public_origin(nar, origin):
             return None
         checking_nar = True
         with open_public(Request(nar, headers=dict(headers, Range='bytes=0-0')),
                          timeout=min(5, probe_time_left(deadline))) as response:
-            if not same_public_origin(response.url, origin):
-                return None
-            if response.status == 206:
-                if (not re.fullmatch(r'bytes 0-0/[1-9][0-9]*', response.headers.get('Content-Range', ''))
-                        or response.headers.get('Content-Length', '1') != '1'):
-                    return None
-            elif response.status != 200:
+            if (response.status != 206 or not same_public_origin(response.url, origin)
+                    or response.headers.get('Content-Range') != expected_range
+                    or response.headers.get('Content-Length', '1') != '1'):
                 return None
             if len(response.read(1)) != 1:
                 return None
