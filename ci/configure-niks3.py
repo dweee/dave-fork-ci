@@ -94,16 +94,13 @@ def configure(oidc=False):
         raise ValueError('Invalid read credential')
     config = directory/'nix.conf'
     read_url = 'https://niks3.monke.fail' + ('/oidc' if oidc else '')
-    inherited = os.environ.get('NIX_CONFIG', '')
-    if inherited in ('include '+str(config), '!include '+str(config)):
-        inherited = config.read_text() if config.exists() else ''
-    config.write_text(inherited + '\n' + 'extra-experimental-features = nix-command flakes\naccept-flake-config = false\n' +
+    config.write_text('extra-experimental-features = nix-command flakes\naccept-flake-config = false\n' +
                      runpy.run_path(str(Path(__file__).with_name('cache-config.py')))['nix_config']() +
                      'extra-substituters = '+read_url+'\n'
                      # Large Niks3 NARs repeatedly failed with HTTP/2 stream framing errors.
                      'http2 = false\nalways-allow-substitutes = true\nextra-trusted-public-keys = '+KEY+'\n'
                      'netrc-file = '+str(path)+'\n')
-    values={'NIKS3_NETRC_FILE':str(path), 'NIKS3_READ_URL':read_url, 'NIX_CONFIG':'!include '+str(config)}
+    values={'NIKS3_NETRC_FILE':str(path), 'NIKS3_READ_URL':read_url}
     if oidc:
         values['NIKS3_READ_AUTH'] = 'github-oidc'
     previous = os.environ.get('NIX_USER_CONF_FILES', str(Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home()/'.config')))/'nix/nix.conf'))
