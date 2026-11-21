@@ -97,10 +97,7 @@ def main():
     substituter = public_cache(env)
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.source, env=env).strip()
     flags = ['--no-update-lock-file', '--no-write-lock-file',
-             '--option', 'accept-flake-config', 'false', '--option', 'builders', '',
-             '--option', 'substituters', ' '.join(CACHE['PUBLIC']),
-             '--option', 'trusted-public-keys', ' '.join(CACHE['KEYS']),
-             '--option', 'extra-substituters', substituter]
+             '--option', 'accept-flake-config', 'false', '--option', 'builders', '']
     if substituter:
         flags += ['--option', 'http2', env.get('ATTIC_HTTP2', 'true')]
     packages = ['.#packages.' + args.system + '.' + name for name in row['packages']]

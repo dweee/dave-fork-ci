@@ -12,14 +12,8 @@ import re
 import runpy
 
 HERE = Path(__file__).resolve().parent
-CACHE_CONF = runpy.run_path(str(HERE/'cache-config.py'))['nix_config']()
-
-
-def config(value):
-    if not isinstance(value, str) or '${{' in value:
-        raise ValueError('Dynamic NIX_CONFIG requires manual review')
-    value = re.sub(r'(?m)^(?:extra-)?(?:substituters|trusted-substituters|trusted-public-keys)\s*=.*\n?', '', value)
-    return value.rstrip()+'\n'+CACHE_CONF
+CACHE = runpy.run_path(str(HERE/'cache-config.py'))
+config = CACHE['transform']
 
 
 def apply(document):
@@ -27,32 +21,54 @@ def apply(document):
     manual = []
     for name, job in document.get('jobs', {}).items():
         steps = job.get('steps', [])
-        nix_job = any('nix' in str(step.get('uses', '')).split('@', 1)[0].lower()
-                      or re.search(r'\bnix(?:-shell|-store|-build|-instantiate|-env)?\s', str(step.get('run', '')))
-                      for step in steps)
-        if not nix_job:
+        if not CACHE['nix_job'](steps):
+            continue
+        if any('configure-attic-read.py' in str(step.get('run', '')) for step in steps):
+            manual.append(str(name)+': legacy Attic reader: migrate to canonical Niks3 reader in owning repository before sync')
             continue
         inherited = document.get('env', {}).get('NIX_CONFIG', '')
-        job.setdefault('env', {})['NIX_CONFIG'] = config(job.get('env', {}).get('NIX_CONFIG', inherited))
+        original = copy.deepcopy(job)
+        try:
+            job.setdefault('env', {})['NIX_CONFIG'] = config(job.get('env', {}).get('NIX_CONFIG', inherited))
+        except ValueError as error:
+            manual.append(str(name)+': env.NIX_CONFIG: '+str(error))
+            document['jobs'][name] = original
+            continue
         effective = document.get('env', {}) | job.get('env', {})
         if str(effective.get('CI_NIX_DAEMON_MANAGED')) == '1':
             job['env']['NIX_CONFIG'] += 'extra-substituters = https://niks3.monke.fail\n'
         for step in steps:
             env = step.get('env', {})
             if 'NIX_CONFIG' in env:
-                env['NIX_CONFIG'] = config(env['NIX_CONFIG'])
+                try:
+                    env['NIX_CONFIG'] = config(env['NIX_CONFIG'])
+                except ValueError as error:
+                    manual.append(str(name)+': step.env.NIX_CONFIG: '+str(error))
+                    document['jobs'][name] = original
+                    break
                 if str(effective.get('CI_NIX_DAEMON_MANAGED')) == '1':
                     env['NIX_CONFIG'] += 'extra-substituters = https://niks3.monke.fail\n'
-            action = str(step.get('uses', '')).split('@', 1)[0]
-            field = ('nix_conf' if action == 'nixbuild/nix-quick-install-action' else
-                     'extra-conf' if action in {'DeterminateSystems/determinate-nix-action',
-                                               'DeterminateSystems/nix-installer-action'} else None)
+            field = CACHE['installer_field'](step)
             if field:
                 settings = step.setdefault('with', {})
-                settings[field] = config(settings.get(field, ''))
+                try:
+                    settings[field] = config(settings.get(field, ''))
+                except ValueError as error:
+                    manual.append(str(name)+': '+field+': '+str(error))
+                    document['jobs'][name] = original
+                    break
             run = str(step.get('run', ''))
             if re.search(r'--option\s+(?:extra-)?substituters|(?:^|\n)\s*(?:export\s+)?NIX_CONFIG=', run):
                 manual.append(str(name)+': explicit command cache override; retain proof-only restrictions, review build overrides')
+        if document['jobs'][name] is not original and any(CACHE['installer_field'](step) for step in steps):
+            old = original.get('env', {}).get('NIX_CONFIG', inherited)
+            kept = CACHE['without_cache'](old)
+            if kept.strip() or inherited.strip():
+                job['env']['NIX_CONFIG'] = kept+'\n'
+            else:
+                job['env'].pop('NIX_CONFIG', None)
+            if not job['env']:
+                job.pop('env')
     return document, sorted(set(manual))
 
 

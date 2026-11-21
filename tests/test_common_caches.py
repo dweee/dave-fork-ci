@@ -37,7 +37,7 @@ class CommonCaches(unittest.TestCase):
 
     def test_build_flags_and_test_environment_use_common_public_policy(self):
         source = (ROOT/'bin/build.py').read_text()
-        self.assertIn("' '.join(CACHE['PUBLIC'])", source)
+        self.assertIn("CACHE['nix_config']()", source)
         self.assertIn("CACHE['nix_config']()", source)
 
     def test_reusable_workflow_configures_each_nix_install(self):
@@ -91,3 +91,49 @@ class CommonCaches(unittest.TestCase):
         self.assertIn('extra-substituters = https://niks3.monke.fail\n', config)
         self.assertNotIn('netrc-file', config)
         self.assertEqual(sync['apply'](after)[0], after)
+
+    def test_unrelated_expression_and_dynamic_cache_manual_review(self):
+        sync = runpy.run_path(str(ROOT/'ci/sync-cache-workflows.py'))
+        document = {'jobs': {'build': {'env': {'NIX_CONFIG': "cores = ${{ matrix.cores }}\n"},
+                                      'steps': [{'run': 'nix build .#foo'}]},
+                             'dynamic': {'steps': [{'uses': 'DeterminateSystems/determinate-nix-action@x',
+                                                   'with': {'extra-conf': '${{ steps.conf.outputs.conf }}'}}]}}}
+        after, manual = sync['apply'](document)
+        self.assertIn('cores = ${{ matrix.cores }}', after['jobs']['build']['env']['NIX_CONFIG'])
+        self.assertEqual(after['jobs']['dynamic'], document['jobs']['dynamic'])
+        self.assertIn('dynamic: extra-conf: dynamic cache configuration', manual)
+
+    def test_installer_policy_does_not_duplicate_job_environment(self):
+        sync = runpy.run_path(str(ROOT/'ci/sync-cache-workflows.py'))
+        after, _ = sync['apply']({'jobs': {'build': {'steps': [
+            {'uses': 'DeterminateSystems/determinate-nix-action@x'}]}}})
+        self.assertNotIn('env', after['jobs']['build'])
+
+    @unittest.skipUnless(__import__('shutil').which('nix'), 'Nix required')
+    def test_existing_user_reader_survives_appended_job_policy(self):
+        import os, subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            conf = Path(directory)/'reader.conf'
+            conf.write_text('extra-substituters = https://niks3.monke.fail\n')
+            env = dict(os.environ, NIX_USER_CONF_FILES=str(conf), NIX_CONFIG=CACHE['nix_config']())
+            result = subprocess.run(['nix', 'config', 'show', 'substituters'], env=env,
+                                    check=True, capture_output=True, text=True)
+            self.assertIn('https://niks3.monke.fail', result.stdout.split())
+            for url in CACHE['PUBLIC']:
+                self.assertIn(url, result.stdout.split())
+
+    def test_installer_job_masks_only_inherited_cache_override(self):
+        sync = runpy.run_path(str(ROOT/'ci/sync-cache-workflows.py'))
+        doc = {'env': {'NIX_CONFIG': 'substituters = https://old.example\n'},
+               'jobs': {'build': {'steps': [{'uses': 'DeterminateSystems/determinate-nix-action@x'}]}}}
+        after, _ = sync['apply'](doc)
+        self.assertEqual(after['jobs']['build']['env']['NIX_CONFIG'].strip(), '')
+        self.assertEqual(sync['apply'](after)[0], after)
+
+    def test_legacy_attic_reader_is_a_manual_migration(self):
+        sync = runpy.run_path(str(ROOT/'ci/sync-cache-workflows.py'))
+        doc = {'jobs': {'build': {'steps': [{'run': 'python3 ci/configure-attic-read.py'},
+                                           {'run': 'nix build .#foo'}]}}}
+        after, manual = sync['apply'](doc)
+        self.assertEqual(after, doc)
+        self.assertIn('legacy Attic reader', manual[0])

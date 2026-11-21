@@ -14,7 +14,7 @@ import shlex
 import sys
 import runpy
 
-CACHE_CONF = runpy.run_path(str(Path(__file__).with_name("cache-config.py")))["nix_config"]()
+CACHE = runpy.run_path(str(Path(__file__).with_name("cache-config.py")))
 
 
 KEY = 'niks3.monke.fail-1:q13GqiZgAxx7SyoLZInXoJjviZMOdNpfG03xs0VUD2M='
@@ -237,17 +237,20 @@ def migrate_document(document, controller_revision=None):
                 del job['secrets']
             permissions(document, job)
         steps = job.get('steps', [])
-        nix_job = isinstance(steps, list) and any(
-            'nix' in str(step.get('uses', '')).split('@', 1)[0].lower()
-            or re.search(r'\bnix(?:-shell|-store)?\s', str(step.get('run', '')))
-            for step in steps if isinstance(step, dict))
-        if nix_job:
+        if CACHE['nix_job'](steps):
             inherited = document.get('env', {}).get('NIX_CONFIG', '')
-            config = job.get('env', {}).get('NIX_CONFIG', inherited)
-            if not isinstance(config, str) or '${{' in config:
-                raise MigrationError('Dynamic NIX_CONFIG requires manual review: ' + str(job_name))
-            config = re.sub(r'(?m)^(?:extra-)?(?:substituters|trusted-substituters|trusted-public-keys)\s*=.*\n?', '', config)
-            job.setdefault('env', {})['NIX_CONFIG'] = config.rstrip() + '\n' + CACHE_CONF
+            try:
+                config = CACHE['transform'](job.get('env', {}).get('NIX_CONFIG', inherited))
+                if any(CACHE['installer_field'](step) for step in steps):
+                    config = CACHE['without_cache'](config)
+                    if config.strip() or inherited.strip():
+                        job.setdefault('env', {})['NIX_CONFIG'] = config+'\n'
+                    else:
+                        job.get('env', {}).pop('NIX_CONFIG', None)
+                else:
+                    job.setdefault('env', {})['NIX_CONFIG'] = config
+            except ValueError as error:
+                raise MigrationError(str(job_name)+': '+str(error)) from error
         if not isinstance(steps, list):
             raise MigrationError('Expected step list: ' + str(job_name))
         rewritten, removed_ids, has_reader, has_publisher = [], [], False, False
@@ -345,8 +348,10 @@ def migrate_document(document, controller_revision=None):
                     config = re.sub(pattern, lambda match: match[1] + (KEY if variable == 'ATTIC_PUBLIC_KEY' else ''), config)
                     if 'vars.' + variable in config:
                         raise MigrationError('Mixed Attic Nix configuration requires manual repair')
-                config = re.sub(r'(?m)^(?:extra-)?(?:substituters|trusted-substituters|trusted-public-keys)\s*=.*\n?', '', config)
-                settings[field] = config.rstrip() + '\n' + CACHE_CONF
+                try:
+                    settings[field] = CACHE['transform'](config)
+                except ValueError as error:
+                    raise MigrationError(str(job_name)+': '+field+': '+str(error)) from error
             rewritten.append(step)
         # Some native jobs only had an isolated publisher and never read either
         # private cache. Add the reader to this known package-build shape too;

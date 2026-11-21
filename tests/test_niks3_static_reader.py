@@ -104,9 +104,19 @@ class Niks3StaticReader(unittest.TestCase):
         env = {**os.environ, **self.exported()}
         caches = __import__('json').loads((ROOT/'ci/caches.json').read_text())
         result = subprocess.run([NIX_COMMAND, 'config', 'show', 'substituters'], env=env, capture_output=True, text=True, check=True)
-        self.assertEqual(result.stdout.split(), caches['substituters'])
+        self.assertEqual(set(result.stdout.split()), set(caches['substituters']))
+        self.assertEqual(result.stdout.split()[-1], 'https://niks3.monke.fail')
         result = subprocess.run([NIX_COMMAND, 'config', 'show', 'cores'], env=env, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), '3')
+
+    @unittest.skipUnless(__import__('shutil').which('nix'), 'Nix required')
+    def test_cleanup_keeps_nix_and_repeat_setup_working(self):
+        self.configure()
+        os.environ.update(self.exported())
+        self.reader.cleanup()
+        self.worker.stop()
+        subprocess.run([NIX_COMMAND, '--extra-experimental-features', 'nix-command', 'config', 'show'], check=True, capture_output=True)
+        self.configure()
 
     def test_job_credentials_directory_overrides_runner_temp(self):
         target = self.root / "job-credentials"
