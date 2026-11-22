@@ -8,15 +8,21 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
+from http.client import HTTPException
 import importlib.util
 import json
 import os
 from pathlib import Path
+from queue import Empty, SimpleQueue
 import re
 import subprocess
 import sys
 import tempfile
+from threading import Condition, Thread
 import time
+from urllib.error import HTTPError
+from urllib.parse import urljoin, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 # Never write bytecode: consumers once tracked ci/__pycache__ and the rewrite
 # dirtied the checkout that the clean-checkout checks require.
@@ -216,11 +222,14 @@ def with_transport_retries(args, attempt, sleep=None):
             ensure_daemon()
 
 
-def run(*args, env=None):
+def run(*args, env=None, deadline=None):
     def attempt():
+        timeout = 6*3600 if deadline is None else probe_time_left(deadline)
         try:
-            result = subprocess.run(args, cwd=ROOT, env=env, text=True, capture_output=True, timeout=6*3600)
+            result = subprocess.run(args, cwd=ROOT, env=env, text=True, capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired:
+            if deadline is not None:
+                raise TimeoutError from None
             raise CommandFailure('command deadline exceeded') from None
         if result.returncode:
             # Nix diagnostics may contain private paths or authenticated URLs. Emit
@@ -236,7 +245,7 @@ def run(*args, env=None):
             detail = safe_detail(diagnostic)
             raise CommandFailure(message + (': ' + detail if detail else ''), category)
         return result.stdout.strip()
-    return with_transport_retries(args, attempt)
+    return with_transport_retries(args, attempt) if deadline is None else attempt()
 
 
 def dirty_tracked_paths(limit=20):
@@ -318,13 +327,13 @@ def build_environment(env):
         os.environ.update(previous)
 
 
-def info(paths, env, store=None):
+def info(paths, env, store=None, **kwargs):
     args = ['nix', 'path-info', '--json']
     if store:
         args += ['--store', store]
     else:
         args += ['--recursive']
-    value = json.loads(run(*args, *paths, env=env))
+    value = json.loads(run(*args, *paths, env=env, **kwargs))
     if isinstance(value, list):
         value = {entry['path']: entry for entry in value}
     if not isinstance(value, dict):
@@ -474,10 +483,10 @@ def published_metadata(paths, origin, reader):
     return result
 
 
-def verify_signatures(paths, origin, reader):
+def verify_signatures(paths, origin, reader, **kwargs):
     """Check narinfo signatures against the origin's key without reading NARs."""
     for batch in batches(paths, SIGNATURE_BATCH):
-        run('nix', 'store', 'verify', '--store', origin, '--no-contents', '--sigs-needed', '1', *batch, env=reader)
+        run('nix', 'store', 'verify', '--store', origin, '--no-contents', '--sigs-needed', '1', *batch, env=reader, **kwargs)
 
 
 def verify_published(roots, expected, env):
@@ -947,13 +956,242 @@ def derivation_output_paths(target, env):
     return paths
 
 
+PUBLIC_PROBE_SECONDS = 60
+PUBLIC_ORIGIN_FAILURES = 8
+PUBLIC_ORIGIN_WORKERS = 12
+NAR_COMPRESSION_MAGIC = {'zstd': b'\x28', 'xz': b'\xfd', 'bzip2': b'B', 'none': b'\x0d'}
+
+
+def probe_time_left(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
+
+
+def same_public_origin(url, origin):
+    target = urlsplit(url)
+    return target.scheme == 'https' and target.netloc.lower() == urlsplit(origin).netloc.lower()
+
+
+class PublicCacheRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, url):
+        # urllib drains followed redirect bodies without a byte limit.
+        return None
+
+
+class NarProbeMiss(Exception):
+    """The cache did not provide usable evidence that the NAR is available."""
+
+
+def public_narinfo(origin, key, path, deadline):
+    """Return unchanged narinfo bytes, or None for a narinfo miss."""
+    base = origin.rstrip('/') + '/'
+    name = path.removeprefix('/nix/store/')[:32] + '.narinfo'
+    open_public = build_opener(PublicCacheRedirect()).open
+    headers = {'Cache-Control': 'no-cache', 'User-Agent': 'dave-fork-ci/1'}
+    checking_nar = False
+    try:
+        with open_public(Request(base + name, headers=headers), timeout=min(5, probe_time_left(deadline))) as response:
+            if response.status != 200 or not same_public_origin(response.url, origin):
+                return None
+            data = response.read(64 * 1024 + 1)
+        if len(data) > 64 * 1024:
+            return None
+        lines = data.decode().split('\n')
+        if [line for line in lines if line.startswith('StorePath:')] != ['StorePath: ' + path]:
+            return None
+        urls = [line for line in lines if line.startswith('URL:')]
+        prefix = 'Sig: ' + key.split(':', 1)[0] + ':'
+        if (len(urls) != 1 or not re.fullmatch(r'URL: [!-~]+', urls[0]) or '\\' in urls[0]
+                or not any(line.startswith(prefix) for line in lines)):
+            return None
+        sizes = [line for line in lines if line.startswith('FileSize:')]
+        magic = None
+        if sizes:
+            if len(sizes) != 1 or not re.fullmatch(r'FileSize: [1-9][0-9]*', sizes[0]):
+                raise NarProbeMiss
+            expected_total = sizes[0].removeprefix('FileSize: ')
+        else:
+            compression = [line.removeprefix('Compression: ') for line in lines if line.startswith('Compression:')]
+            if len(compression) != 1 or compression[0] not in NAR_COMPRESSION_MAGIC:
+                raise NarProbeMiss
+            magic = NAR_COMPRESSION_MAGIC[compression[0]]
+            expected_total = r'[1-9][0-9]*'
+        expected_range = 'bytes 0-0/' + expected_total
+        # Check that a ranged GET can read the matching NAR from the same cache.
+        nar = urljoin(base, urls[0][5:])
+        if not same_public_origin(nar, origin):
+            raise NarProbeMiss
+        checking_nar = True
+        with open_public(Request(nar, headers=dict(headers, Range='bytes=0-0')),
+                         timeout=min(5, probe_time_left(deadline))) as response:
+            if (response.status != 206 or not same_public_origin(response.url, origin)
+                    or not re.fullmatch(expected_range, response.headers.get('Content-Range', ''))
+                    or response.headers.get('Content-Length', '1') != '1'):
+                raise NarProbeMiss
+            first_byte = response.read(1)
+            if len(first_byte) != 1 or (magic is not None and first_byte != magic):
+                raise NarProbeMiss
+        return data
+    except HTTPError as error:
+        error.close()
+        if ((checking_nar and error.code == 404) or error.code in {401, 403, 408, 429}
+                or 500 <= error.code < 600):
+            raise OSError('public cache unavailable') from None
+        if checking_nar:
+            raise NarProbeMiss from None
+        return None
+    except ValueError:
+        return None
+
+
+def probe_public_caches(work, deadline):
+    pending = {}
+    results = SimpleQueue()
+    failures = {}
+    active = {}
+    available = Condition()
+    for item in work:
+        pending.setdefault(item[0], []).append(item)
+
+    def probe():
+        while True:
+            with available:
+                while pending and time.monotonic() < deadline:
+                    origin = next((url for url in pending if active.get(url, 0) < PUBLIC_ORIGIN_WORKERS), None)
+                    if origin is not None:
+                        break
+                    available.wait(timeout=max(0, deadline - time.monotonic()))
+                else:
+                    return
+                items = pending[origin]
+                item = items.pop()
+                if not items:
+                    del pending[origin]
+                    if not pending:
+                        available.notify_all()
+                if failures.get(origin, 0) >= PUBLIC_ORIGIN_FAILURES:
+                    results.put((item, None, 'cutoff'))
+                    continue
+                active[origin] = active.get(origin, 0) + 1
+            narinfo = reason = None
+            try:
+                narinfo = public_narinfo(*item, deadline)
+            except NarProbeMiss:
+                reason = 'nar-miss'
+            except (OSError, HTTPException):
+                reason = 'unavailable'
+            finally:
+                with available:
+                    if reason == 'unavailable':
+                        failures[origin] = failures.get(origin, 0) + 1
+                    elif failures.get(origin, 0) < PUBLIC_ORIGIN_FAILURES:
+                        failures[origin] = 0
+                    active[origin] -= 1
+                    available.notify()
+            results.put((item, narinfo, reason))
+
+    # DNS and slow reads can outlive socket timeouts. Only the caller stages
+    # results, and it never joins workers or waits past the shared deadline.
+    for _ in range(min(METADATA_WORKERS, len(work))):
+        Thread(target=probe, daemon=True).start()
+    for _ in work:
+        try:
+            item, narinfo, reason = results.get(timeout=probe_time_left(deadline))
+        except (Empty, TimeoutError):
+            return
+        if time.monotonic() >= deadline:
+            return
+        yield item, narinfo, reason
+
+
+def served_build_outputs(entries, env):
+    """Prove availability with bounded, read-only probes and Nix signature checks."""
+    caches = module('cache-config.py').PUBLIC_CACHES
+    work = set()
+    for path, entry in entries.items():
+        if entry.get('ultimate') is True or not set(entry['references']) <= entries.keys():
+            # A reference outside this inventory could otherwise lose its only
+            # copy. Keep this root and its recursive closure in the transfer.
+            continue
+        names = {sig.partition(':')[0] for sig in entry.get('signatures', []) if ':' in sig}
+        # Recorded signers only schedule probes. They never prove availability.
+        work.update((origin, key, path) for origin, key in caches.items() if key.split(':', 1)[0] in names)
+    if not caches and entries:
+        print(f'Public-cache probing unavailable; kept {len(entries)} paths.', file=sys.stderr, flush=True)
+    if not work:
+        return set()
+
+    served = set()
+    overdue = set()
+    unavailable = set()
+    cutoff = set()
+    nar_misses = set()
+    remaining = work.copy()
+    deadline = time.monotonic() + PUBLIC_PROBE_SECONDS
+    # Reserve time to verify responses even when one origin hangs.
+    network_deadline = deadline - PUBLIC_PROBE_SECONDS / 5
+    with tempfile.TemporaryDirectory(prefix='public-build-cache-') as directory:
+        staged = {}
+        for item, narinfo, reason in probe_public_caches(work, network_deadline):
+            remaining.remove(item)
+            origin, key, path = item
+            if reason == 'cutoff':
+                cutoff.add(path)
+            elif reason == 'unavailable':
+                unavailable.add(path)
+            elif reason == 'nar-miss':
+                nar_misses.add(path)
+            if narinfo is None:
+                continue
+            if origin not in staged:
+                cache = Path(directory) / str(len(staged))
+                cache.mkdir()
+                (cache / 'nix-cache-info').write_text('StoreDir: /nix/store\n')
+                staged[origin] = (cache, key, [])
+            cache, _, paths = staged[origin]
+            (cache / (path.removeprefix('/nix/store/')[:32] + '.narinfo')).write_bytes(narinfo)
+            paths.append(path)
+        # Nix reads the exact wire bytes. Content addressing can bypass Nix's
+        # signature requirement, so conservatively retain CA records.
+        for cache, key, paths in staged.values():
+            reader = remote_env(env, directory)
+            reader['NIX_CONFIG'] += '\nsecret-key-files =\ntrusted-public-keys = ' + key + '\n'
+            for batch in batches(paths, METADATA_BATCH):
+                try:
+                    found = info(batch, reader, cache.as_uri(), deadline=deadline)
+                    matching = [path for path in batch if found.get(path) is not None
+                                and not found[path].get('ca')
+                                and metadata(found[path]) == metadata(entries[path])]
+                    if matching:
+                        verify_signatures(matching, cache.as_uri(), reader, deadline=deadline)
+                        served.update(matching)
+                except TimeoutError:
+                    overdue.update(batch)
+                except (CommandFailure, OSError, ValueError):
+                    # An unverified batch stays eligible for publication.
+                    continue
+    overdue.update(path for _, _, path in remaining)
+    limited = (overdue | cutoff) - served
+    if limited:
+        print(f'Public-cache probe deadline or origin cutoff reached; kept {len(limited)} paths.',
+              file=sys.stderr, flush=True)
+    failed = (unavailable | cutoff | overdue) - served
+    if failed:
+        print(f'Public-cache probing unavailable or incomplete; kept {len(failed)} paths.',
+              file=sys.stderr, flush=True)
+    nar_kept = nar_misses - served
+    if nar_kept:
+        print(f'Public NAR probe failed; kept {len(nar_kept)} paths.', file=sys.stderr, flush=True)
+    return served
+
+
 def completed_build_outputs(candidates, env):
     # Query only graph candidates in the local daemon. Invalid paths are null
     # in the pinned Nix JSON API; no graph output is realized or substituted.
-    candidates = sorted(candidates)
-    selected = []
-    for index in range(0, len(candidates), 128):
-        batch = candidates[index:index+128]
+    entries = {}
+    for batch in batches(candidates, 128):
         document = json.loads(run('nix', 'path-info', '--json',
                                   '--option', 'substituters', '', '--option', 'extra-substituters', '',
                                   *batch, env=env))
@@ -961,20 +1199,18 @@ def completed_build_outputs(candidates, env):
             document = {entry['path']: entry for entry in document if entry is not None}
         if not isinstance(document, dict) or set(document) - set(batch):
             raise ValueError('Invalid local output inventory')
-        for path, entry in sorted(document.items()):
+        for path, entry in document.items():
             if entry is None:
                 continue
             metadata(entry)
             signatures = entry.get('signatures', [])
             if not isinstance(signatures, list) or any(not isinstance(sig, str) for sig in signatures):
                 raise ValueError('Invalid output signatures')
-            # Keep the official-upstream signature convention: locally built or
-            # unsigned/custom-cache outputs need private publication. This is
-            # selection metadata, not an independent upstream cache proof.
-            if entry.get('ultimate') is not True and any(sig.startswith('cache.nixos.org-1:') for sig in signatures):
-                continue
-            selected.append(path)
-    return selected
+            entries[path] = entry
+    served = served_build_outputs(entries, env)
+    if served:
+        print(f'Public caches serve {len(served)} completed dependency outputs', file=sys.stderr, flush=True)
+    return sorted(entries.keys() - served)
 
 
 def build_with_dependencies(attr, rules, system, visibility, env, publish_env, outputs, label):

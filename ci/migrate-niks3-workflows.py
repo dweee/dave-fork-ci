@@ -473,6 +473,11 @@ def retain_artifact_builds(document):
         if 'ci/retain-build-outputs.py' not in native[0]['run']:
             if 'target=$(python3 ci/native-target.py package)' in native[0]['run']:
                 original = native[0]['run']
+                package_build = re.compile(r'^nix build "\$target"(?: [^\n]*)? > outputs\.txt$', re.MULTILINE)
+                original, matches = package_build.subn(
+                    lambda match: match[0] + '\ncp outputs.txt "$RETAINED_BUILD_ROOTS"', original)
+                if matches != 1:
+                    raise MigrationError('Review native package output capture: ' + str(name))
                 if 'FLAKEY_CACHE_BUILD' in original:
                     raise MigrationError('Review native script delimiter: ' + str(name))
                 native[0]['run'] = ('set -euo pipefail\n'

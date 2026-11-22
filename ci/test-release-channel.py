@@ -7,6 +7,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from threading import Event
+from urllib.error import HTTPError
 import tempfile
 import shutil
 import unittest
@@ -837,14 +840,310 @@ class BuildDependencies(unittest.TestCase):
         with patch.object(c, 'run', return_value=json.dumps({unrelated: ENTRY})):
             with self.assertRaises(ValueError): c.completed_build_outputs({A, B}, {})
 
-    def test_official_signed_substitutes_are_skipped_but_local_and_private_outputs_retained(self):
-        entries = {A: dict(ENTRY, signatures=['cache.nixos.org-1:fixture']),
-                   B: dict(ENTRY, signatures=['niks3.monke.fail-1:fixture'])}
-        with patch.object(c, 'run', return_value=json.dumps(entries)):
-            self.assertEqual(c.completed_build_outputs({A, B}, {}), [B])
-        entries[A]['ultimate'] = True
-        with patch.object(c, 'run', return_value=json.dumps(entries)):
+    def test_public_cache_pairs_match_the_reviewed_substituters(self):
+        config = c.module('cache-config.py')
+        expected = {
+            'https://install.determinate.systems': 'cache.flakehub.com-3',
+            'https://cache.lix.systems': 'cache.lix.systems',
+            'https://nix-community.cachix.org': 'nix-community.cachix.org-1',
+            'https://cache.nixos.org/': 'cache.nixos.org-1',
+            'https://ai.cachix.org': 'ai.cachix.org-1',
+            'https://cache.numtide.com': 'niks3.numtide.com-1',
+            'https://codex-desktop-linux.cachix.org': 'codex-desktop-linux.cachix.org-1',
+            'https://nix-on-droid.cachix.org': 'nix-on-droid.cachix.org-1',
+            'https://virby-nix-darwin.cachix.org': 'virby-nix-darwin.cachix.org-1',
+            'https://cache.nixos-cuda.org': 'cache.nixos-cuda.org',
+            'https://cache.flox.dev': 'flox-cache-public-1',
+        }
+        self.assertEqual(set(config.PUBLIC), set(expected))
+        self.assertEqual({url: key.split(':', 1)[0] for url, key in config.PUBLIC_CACHES.items()}, expected)
+
+    @staticmethod
+    def public_response(url, body=b'', *, status=200, headers=None):
+        response = contextlib.closing(io.BytesIO(body))
+        response.thing.status = status
+        response.thing.url = url
+        response.thing.headers = headers or {}
+        return response
+
+    def public_nar_response(self, url, size):
+        return self.public_response(url, b'x', status=206, headers={'Content-Range': f'bytes 0-0/{size}'})
+
+    def test_path_with_both_niks3_and_public_signatures_uses_live_public_proof(self):
+        local = dict(ENTRY, signatures=['niks3.monke.fail-1:fixture', 'niks3.numtide.com-1:fixture'])
+        origin = 'https://cache.numtide.com'
+        narinfo = (f'StorePath: {A}\nURL: nar/example.nar.zst\nFileSize: 160\n'
+                   'Sig: niks3.numtide.com-1:fixture\nSig: niks3.monke.fail-1:fixture\n')
+        calls = []
+
+        def request(req, timeout):
+            byte_range = req.get_header('Range')
+            calls.append((req.get_method(), req.full_url, byte_range))
+            if byte_range is not None:
+                return self.public_nar_response(req.full_url, 160)
+            return self.public_response(req.full_url, narinfo.encode())
+
+        def verify(paths, cache, reader, *, deadline):
+            self.assertEqual(paths, [A])
+            file = next(Path(cache.removeprefix('file://')).glob('*.narinfo'))
+            self.assertEqual(file.read_bytes(), narinfo.encode())
+            self.assertTrue(reader['NIX_CONFIG'].splitlines()[-1].startswith('trusted-public-keys = niks3.numtide.com-1:'))
+
+        with patch.object(c, 'run', return_value=json.dumps({A: local})), \
+                patch.object(c, 'build_opener', return_value=SimpleNamespace(open=request)), \
+                patch.object(c, 'info', return_value={A: ENTRY}), \
+                patch.object(c, 'verify_signatures', side_effect=verify) as check:
+            self.assertEqual(c.completed_build_outputs({A}, {}), [])
+            check.assert_called_once()
+        self.assertEqual(calls, [('GET', origin + '/' + 'a'*32 + '.narinfo', None),
+                                 ('GET', origin + '/nar/example.nar.zst', 'bytes=0-0')])
+
+    def test_unauthorized_or_missing_public_narinfo_is_retained(self):
+        local = dict(ENTRY, signatures=['cache.flakehub.com-3:fixture'])
+        for status in (401, 403, 404):
+            with self.subTest(status=status), patch.object(c, 'run', return_value=json.dumps({A: local})), \
+                    patch.object(c, 'build_opener') as opener, patch.object(c, 'verify_signatures') as verify:
+                url = 'https://install.determinate.systems/' + 'a'*32 + '.narinfo'
+                opener.return_value.open.side_effect = HTTPError(url, status, 'fixture', {}, None)
+                self.assertEqual(c.completed_build_outputs({A}, {}), [A])
+                self.assertEqual(opener.return_value.open.call_args.args[0].full_url, url)
+                verify.assert_not_called()
+
+    def test_public_probe_rejections_keep_the_output(self):
+        origin = 'https://cache.numtide.com'
+        local = dict(ENTRY, signatures=['niks3.numtide.com-1:fixture'])
+        wire = f'StorePath: {A}\nURL: nar/example.nar.zst\nFileSize: 160\nSig: niks3.numtide.com-1:fixture\n'.encode()
+        cases = [
+            (wire.replace(A.encode(), B.encode()), None, 1),
+            (wire.replace(b'Sig:', b'Comment:'), None, 1),
+            (wire + b'x' * 65536, None, 1),
+            (wire.replace(b'nar/example.nar.zst', b'https://niks3.monke.fail/nar'), None, 1),
+            (wire.replace(b'nar/example.nar.zst', b'https://cache.lantian.pub/nar'), None, 1),
+            (wire.replace(b'nar/example.nar.zst', b'https://other.example/nar'), None, 1),
+            (wire, 404, 2),
+            (wire, TimeoutError(), 2),
+        ]
+        for body, nar_error, count in cases:
+            def request(req, timeout):
+                if req.full_url.endswith('.narinfo'):
+                    return self.public_response(req.full_url, body)
+                self.assertEqual(req.full_url, origin + '/nar/example.nar.zst')
+                if isinstance(nar_error, Exception):
+                    raise nar_error
+                raise HTTPError(req.full_url, nar_error, 'fixture', {}, None)
+            with self.subTest(nar_error=nar_error, calls=count), \
+                    patch.object(c, 'run', return_value=json.dumps({A: local})), \
+                    patch.object(c, 'build_opener') as opener, patch.object(c, 'info') as verify:
+                opener.return_value.open.side_effect = request
+                self.assertEqual(c.completed_build_outputs({A}, {}), [A])
+                self.assertEqual(opener.return_value.open.call_count, count)
+                verify.assert_not_called()
+
+    def test_head_success_does_not_hide_a_forbidden_nar_get(self):
+        local = dict(ENTRY, signatures=['niks3.numtide.com-1:fixture'])
+        wire = f'StorePath: {A}\nURL: nar/example.nar.zst\nFileSize: 160\nSig: niks3.numtide.com-1:fixture\n'.encode()
+
+        def request(req, timeout):
+            if req.full_url.endswith('.narinfo'):
+                return self.public_response(req.full_url, wire)
+            if req.get_method() == 'HEAD':
+                return self.public_response(req.full_url)
+            self.assertEqual(req.get_header('Range'), 'bytes=0-0')
+            raise HTTPError(req.full_url, 403, 'fixture', {}, None)
+
+        with patch.object(c, 'run', return_value=json.dumps({A: local})), \
+                patch.object(c, 'build_opener', return_value=SimpleNamespace(open=request)), \
+                patch.object(c, 'info', return_value={A: ENTRY}), patch.object(c, 'verify_signatures') as verify:
+            self.assertEqual(c.completed_build_outputs({A}, {}), [A])
+            verify.assert_not_called()
+
+    def test_nar_probe_validates_range_and_bounds_the_read(self):
+        origin = 'https://cache.numtide.com'
+        key = 'niks3.numtide.com-1:fixture'
+        base = f'StorePath: {A}\nURL: nar/example.nar.zst\nSig: {key}\n'.encode()
+        without_size = base + b'Compression: zstd\n'
+        wire = without_size + b'FileSize: 160\n'
+        for narinfo_body, status, headers, body, expected in (
+            (wire, 206, {'Content-Range': 'bytes 0-0/160'}, b'x', wire),
+            (wire, 206, {'Content-Range': 'bytes 0-0/1'}, b'x', None),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/160'}, b'\x28', without_size),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/71447'}, b'\x28', without_size),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/71447'}, b'<', None),
+            (without_size, 206, {'Content-Range': 'bytes 0-0/0'}, b'\x28', None),
+            (base + b'Compression: unknown\n', 206, {'Content-Range': 'bytes 0-0/71447'}, b'\x28', None),
+            (base, 206, {'Content-Range': 'bytes 0-0/71447'}, b'\x28', None),
+            (wire, 206, {'Content-Range': 'bytes 0-0/160'}, b'', None),
+            (wire, 206, {'Content-Range': 'bytes 1-1/160'}, b'x', None),
+            (wire, 206, {'Content-Range': 'bytes 0-0/160', 'Content-Length': '160'}, b'x', None),
+            (wire, 206, {}, b'x', None),
+            (wire, 200, {'Content-Type': 'text/html', 'Content-Length': '12'}, b'<p>error</p>', None),
+        ):
+            response = self.public_response(origin + '/nar/example.nar.zst', body, status=status, headers=headers)
+            narinfo = self.public_response(origin + '/fixture.narinfo', narinfo_body)
+            with self.subTest(status=status, headers=headers, body=body, narinfo=narinfo_body), \
+                    patch.object(response.thing, 'read', wraps=response.thing.read) as read, \
+                    patch.object(c, 'build_opener') as opener:
+                opener.return_value.open.side_effect = [narinfo, response]
+                item = (origin, key, A)
+                results = list(c.probe_public_caches([item], c.time.monotonic() + 5))
+                self.assertEqual(results, [(item, expected, 'nar-miss' if expected is None else None)])
+                if expected is not None or body == b'<':
+                    read.assert_called_once_with(1)
+                if narinfo_body in (wire, without_size):
+                    self.assertTrue(response.thing.closed)
+                else:
+                    opener.return_value.open.assert_called_once()
+                    response.thing.close()
+
+    def test_nar_probe_miss_logs_kept_paths_to_stderr(self):
+        local = dict(ENTRY, signatures=['niks3.numtide.com-1:fixture'])
+        stderr, stdout = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout), \
+                patch.object(c, 'public_narinfo', side_effect=c.NarProbeMiss):
+            self.assertEqual(c.served_build_outputs({A: local}, {}), set())
+        self.assertEqual(stderr.getvalue(), 'Public NAR probe failed; kept 1 paths.\n')
+        self.assertEqual(stdout.getvalue(), '')
+
+    def test_public_redirects_are_misses(self):
+        handler = c.PublicCacheRedirect()
+        origin = 'https://cache.numtide.com'
+        request = c.Request(origin + '/input', headers={'Range': 'bytes=0-0'})
+        for target in (origin + '/same', 'http://cache.numtide.com/input', 'https://other.example/input',
+                       'https://niks3.monke.fail/input', 'https://cache.lantian.pub/input'):
+            with self.subTest(target=target):
+                self.assertIsNone(handler.redirect_request(request, None, 302, 'fixture', {}, target))
+
+    def test_origin_cutoff_keeps_paths_and_allows_other_origins(self):
+        bad = dict(ENTRY, signatures=['niks3.numtide.com-1:fixture'])
+        good = dict(ENTRY, signatures=['cache.nixos.org-1:fixture'])
+        entries = {A: bad, B: bad, A + '-third': bad, B + '-other': good}
+
+        def probe(origin, key, path, deadline):
+            if origin == 'https://cache.numtide.com':
+                raise TimeoutError
+            return b'wire'
+
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log), patch.object(c, 'METADATA_WORKERS', 1), \
+                patch.object(c, 'PUBLIC_ORIGIN_FAILURES', 2), patch.object(c, 'public_narinfo', side_effect=probe) as probe, \
+                patch.object(c, 'info', return_value={B + '-other': ENTRY}), patch.object(c, 'verify_signatures'):
+            self.assertEqual(c.served_build_outputs(entries, {}), {B + '-other'})
+        self.assertEqual(probe.call_count, 3)
+        self.assertIn('origin cutoff reached; kept 1 paths', log.getvalue())
+        self.assertIn('probing unavailable or incomplete; kept 3 paths', log.getvalue())
+
+    def test_failed_nix_parse_retains_every_path_in_the_batch(self):
+        local = dict(ENTRY, signatures=['cache.nixos.org-1:fixture'])
+        with patch.object(c, 'public_narinfo', return_value=b'wire'), \
+                patch.object(c, 'run', return_value=json.dumps({A: local, B: local})), \
+                patch.object(c, 'info', side_effect=c.CommandFailure('malformed narinfo')) as info, \
+                patch.object(c, 'verify_signatures') as verify:
             self.assertEqual(c.completed_build_outputs({A, B}, {}), [A, B])
+        self.assertEqual(set(info.call_args.args[0]), {A, B})
+        verify.assert_not_called()
+
+    def test_shared_deadline_does_not_wait_for_a_stalled_probe(self):
+        blocked, release = Event(), Event()
+
+        def stall(*args):
+            blocked.set()
+            release.wait(timeout=5)
+
+        log = io.StringIO()
+        local = dict(ENTRY, signatures=['cache.nixos.org-1:fixture'])
+        try:
+            with contextlib.redirect_stderr(log), patch.object(c, 'PUBLIC_PROBE_SECONDS', 0.2), \
+                    patch.object(c, 'run', return_value=json.dumps({A: local, B: local})), \
+                    patch.object(c, 'public_narinfo', side_effect=stall):
+                self.assertEqual(c.completed_build_outputs({A, B}, {}), [A, B])
+                self.assertTrue(blocked.is_set())
+                self.assertIn('deadline or origin cutoff reached; kept 2 paths', log.getvalue())
+                self.assertIn('probing unavailable or incomplete; kept 2 paths', log.getvalue())
+        finally:
+            release.set()
+
+    def test_blocked_origin_leaves_probe_workers_for_healthy_origin(self):
+        release = Event()
+        bad_calls = c.SimpleQueue()
+        bad_origin = 'https://cache.numtide.com'
+        bad = [(bad_origin, 'bad-key', f'{A}-{index}') for index in range(c.METADATA_WORKERS)]
+        good = ('https://cache.nixos.org', 'good-key', B)
+
+        def probe(origin, key, path, deadline):
+            if origin == bad_origin:
+                bad_calls.put(path)
+                release.wait(timeout=5)
+            else:
+                return b'wire'
+
+        try:
+            with patch.object(c, 'public_narinfo', side_effect=probe):
+                results = list(c.probe_public_caches([*bad, good], c.time.monotonic() + 0.5))
+            self.assertEqual(results, [(good, b'wire', None)])
+            self.assertEqual(bad_calls.qsize(), c.PUBLIC_ORIGIN_WORKERS)
+        finally:
+            release.set()
+
+    def test_public_lookup_skips_ineligible_outputs_and_preserves_uncovered_references(self):
+        entries = (
+            dict(ENTRY, signatures=['hydra.nixos.org-1:fixture', 'niks3.monke.fail-1:fixture', 'lantian:fixture']),
+            dict(ENTRY, signatures=['cache.nixos.org-1:fixture'], ultimate=True),
+            dict(ENTRY, signatures=['cache.nixos.org-1:fixture'], references=[B]),
+        )
+        for entry in entries:
+            with self.subTest(entry=entry), patch.object(c, 'run', return_value=json.dumps({A: entry})), \
+                    patch.object(c, 'build_opener') as opener:
+                self.assertEqual(c.completed_build_outputs({A}, {}), [A])
+                opener.assert_not_called()
+
+    @unittest.skipUnless(shutil.which('nix'), 'Nix required for signed cache fixture')
+    def test_public_proof_cryptographically_binds_local_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            env = dict(os.environ, NIX_REMOTE=f'local?root={root / "store"}',
+                       NIX_CONFIG='experimental-features = nix-command flakes\n')
+            artifact = root / 'fixture'
+            artifact.write_text('Signed public build output fixture\n')
+            path = c.run('nix', 'store', 'add-path', str(artifact), env=env)
+            c.run('nix-store', '--generate-binary-cache-key', 'public-fixture',
+                  str(root/'secret'), str(root/'public'), env=env)
+            c.run('nix', 'store', 'sign', '--key-file', str(root/'secret'), path, env=env)
+            c.run('nix', 'copy', '--to', (root/'cache').as_uri(), path, env=env)
+            signed = next((root/'cache').glob('*.narinfo')).read_bytes()
+            size = next(line.removeprefix(b'FileSize: ').decode() for line in signed.splitlines()
+                        if line.startswith(b'FileSize: '))
+            key = (root/'public').read_text().strip()
+            entry = dict(c.info([path], env)[path], ultimate=False)
+            # Signing this fixture does not require its content-address claim.
+            plain = b'\n'.join(line for line in signed.split(b'\n') if not line.startswith(b'CA:'))
+            other_secret = root / 'other-secret'
+            c.run('nix-store', '--generate-binary-cache-key', 'other-fixture',
+                  str(other_secret), str(root/'other-public'), env=env)
+            c.run('nix', 'store', 'sign', '--key-file', str(other_secret), path, env=env)
+            c.run('nix', 'copy', '--to', (root/'other-cache').as_uri(), path, env=env)
+            other_sig = next(line for line in next((root/'other-cache').glob('*.narinfo')).read_bytes().splitlines()
+                             if line.startswith(b'Sig: other-fixture:'))
+            wrong_signer = b'\n'.join(line for line in plain.splitlines() if not line.startswith(b'Sig:'))
+            wrong_signer += b'\n' + other_sig + b'\nSig: public-fixture:' + b'A'*86 + b'==\n'
+            env['NIX_CONFIG'] += f'secret-key-files = {other_secret}\n'
+            for narinfo, expected, actual in (
+                (plain, {path}, entry),
+                (plain.rstrip(b'\n'), set(), entry),
+                (plain.replace(b'\n', b'\r\n'), set(), entry),
+                (plain + b'CA: invalid\n', set(), entry),
+                (plain + b'Sig: invalid\n', set(), entry),
+                (signed, set() if signed != plain else {path}, entry),
+                (plain.replace(b'Sig: public-fixture:', b'Sig: public-fixture:A'), set(), entry),
+                (plain, set(), dict(entry, narSize=entry['narSize'] + 1)),
+                (wrong_signer, set(), entry),
+            ):
+                def request(req, timeout):
+                    if req.get_header('Range') is not None:
+                        return self.public_nar_response(req.full_url, size)
+                    return self.public_response(req.full_url, narinfo)
+                with patch.object(c, 'module', return_value=SimpleNamespace(PUBLIC_CACHES={'https://example.org': key})), \
+                        patch.object(c, 'build_opener', return_value=SimpleNamespace(open=request)):
+                    self.assertEqual(c.served_build_outputs({path: actual}, env), expected)
 
     def test_later_build_failure_still_publishes_completed_dependencies_and_propagates(self):
         graph = {'/nix/store/' + 'c'*32 + '-root.drv': {'outputs': {'out': {'path': A}, 'dev': {'path': B}}}}

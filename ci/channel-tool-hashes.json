@@ -1,6 +1,6 @@
 {
-  "release-channel.py": "b4cd444d28542e7ec3b221c6ceb97c62d6326e7ffc68f61754c8c2eb06faa1df",
-  "test-release-channel.py": "55342ee67f737385aed136ac8317a39708ddc3c1897af03465df22dfe29559e2",
+  "release-channel.py": "8cd1711b0e2f696bf3f9d4201b61021a2ef62485549219c2dd23ecbaea128a37",
+  "test-release-channel.py": "de644b85a7cec55cb2241630b185e298b7dd58fb542a42a339db61f92929f9b2",
   "update-inputs.py": "ce66ee5c77a8b731cee10390c4123b9e467cb376e2443343fdf724baaecfb66f",
   "update-monitor.py": "ff1867c18ef4f549a0d7f84eb828f6a3e44b1575d4d42113bca770ff06e09c74",
   "test-update-automation.py": "1487178f309969a8e54202cc685772512cff404bdd6ccc189abd759a49bb3f3c",
@@ -11,10 +11,10 @@
   "test-push-niks3.py": "ca2239a09fb2fb9862eb36d5b83cb93781b707771fc28b566fba8f1e999e0c37",
   "niks3-oidc-token.py": "58569dc6c6d05232300aae7d03848c66f8678f832d51a1a5326f034da41b2e5f",
   "install-niks3.sh": "55a2f49ee72b9cc24485b31710ecade5cb53f29116bf6141ebf879faeeb852a8",
-  "retain-build-outputs.py": "ff39fa6b6aac595e1ed2fc667aeb537974a3c7313a4745126b923f2627bdeaac",
-  "test-retain-build-outputs.py": "ad509eb232aba1f80fe8f6ca22e8e463f845d798adea2454d354de86d3e6a190",
-  "transfer-attic.py": "59dd605f1f61dc90f24d9259825055cd016a361f1f38d85983e678edf88498a4",
+  "retain-build-outputs.py": "494e1e5e14f1b05146b644239573fd22aacd009877d3cd90fdc825235a29acbb",
+  "test-retain-build-outputs.py": "d79d25039859eea23bd25c81fe61086d6b4d3a374fdb441b41fef1359320071f",
+  "transfer-attic.py": "1c6801636bd79107ed7c0294cf0d7c27e79ca33394474d453c439bff3a535f23",
   "test-transfer-attic.py": "22b88cb1a352b5b130dd259f00733f373c50bb64c52913fdde22c8db9d58c13d",
   "caches.json": "5a4b74c7bf7d9815d9cde39492e570a29f4f27533b3a74a7490ac63de4b577d0",
-  "cache-config.py": "4a2cfb975e78a278926abb3a18164476bb9202df20437fa53e0c72419870e768"
+  "cache-config.py": "7fe4b74ce7997f050689f32627a250e2ca6ea8154ae2709a286c92e02f2626ab"
 }

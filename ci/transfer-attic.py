@@ -55,7 +55,7 @@ def transfer(mode, directory, limit, source_manifest=None):
         process = subprocess.Popen(["nix-store", "--export", *requisites], stdout=subprocess.PIPE)
         try:
             with gzip.open(directory / "closure.nar.gz", "wb", compresslevel=1) as archive:
-                copy_bounded(process.stdout, archive, limit)
+                size = copy_bounded(process.stdout, archive, limit)
             if process.wait():
                 raise ValueError("Closure export failed")
             manifest.write_text("\n".join(paths) + "\n")
@@ -67,6 +67,7 @@ def transfer(mode, directory, limit, source_manifest=None):
             (directory / "SHA256SUMS").write_text(digest.hexdigest() + "  closure.nar.gz\n")
             with (directory / "closure-info.json").open("w") as stream:
                 subprocess.run(["nix", "path-info", "--json", "--recursive", *paths], stdout=stream, check=True)
+            print(f"Exported Nix closure: {size} uncompressed bytes (limit {limit} bytes).", flush=True)
 
         finally:
             if process.poll() is None:
