@@ -62,6 +62,7 @@ class ChannelWorkflowRefs(unittest.TestCase):
                     self.generated(forge, directory, extra=policy)
 
     def test_forgejo_opt_in_only_changes_selected_container_labels(self):
+        # Without forgejoSharedDaemon, regeneration keeps the isolated daemon.
         image = 'sha256:' + 'a' * 64
         with tempfile.TemporaryDirectory() as directory:
             workflows = self.generated('forgejo', directory, ('x86_64-linux', 'aarch64-linux'),
@@ -70,6 +71,8 @@ class ChannelWorkflowRefs(unittest.TestCase):
         for workflow in workflows.values():
             for job in workflow['jobs'].values():
                 steps = [step for step in job['steps'] if step.get('name') == 'Start isolated Determinate daemon']
+                self.assertNotIn('volumes', job.get('container', {}))
+                self.assertNotIn('NIX_SHARED_DAEMON', job['env'])
                 if job['runs-on'] == 'nix':
                     changed += 1
                     self.assertEqual(job['container']['image'], image)
@@ -77,6 +80,32 @@ class ChannelWorkflowRefs(unittest.TestCase):
                     self.assertIn('eval-cores = 2', job['env']['NIX_CONFIG'])
                     self.assertEqual(len(steps), 1)
                     self.assertIn('env -u NIX_REMOTE nix-daemon', steps[0]['run'])
+                else:
+                    self.assertFalse(steps)
+        self.assertGreater(changed, 0)
+
+    def test_shared_daemon_opt_in_connects_every_icicle_job(self):
+        image = installer.SHARED_DAEMON_IMAGE
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.generated('forgejo', directory, ('x86_64-linux', 'aarch64-linux'),
+                                       {'forgejoSharedDaemon': True, 'forgejoDeterminateImage': image,
+                                        'forgejoDeterminateLabels': ['nix']})
+        changed = 0
+        for workflow in workflows.values():
+            for job in workflow['jobs'].values():
+                steps = [step for step in job['steps'] if step.get('name') == 'Connect to the shared Icicle Nix daemon']
+                self.assertFalse([step for step in job['steps'] if step.get('name') == 'Start isolated Determinate daemon'])
+                if job['runs-on'] in ('nix','nix-light'):
+                    changed += 1
+                    self.assertEqual(job['container']['image'], image)
+                    # Untrusted listener and read-only store alias; no creds tmpfs.
+                    self.assertEqual(job['container']['volumes'], ['flakey-ci-nix-pr-v2-ro:/nix:ro',
+                        'flakey-ci-nix-pr-socket-untrusted-ro:/nix/var/nix/daemon-socket:ro'])
+                    self.assertEqual(job['env']['NIX_REMOTE'], 'daemon')
+                    self.assertEqual(job['env']['NIX_SHARED_DAEMON'], '1')
+                    self.assertIn('eval-cores = 2', job['env']['NIX_CONFIG'])
+                    self.assertEqual(len(steps), 1)
+                    self.assertEqual(steps[0]['run'],'bash ci/connect-shared-daemon.sh')
                 else:
                     self.assertFalse(steps)
         self.assertGreater(changed, 0)

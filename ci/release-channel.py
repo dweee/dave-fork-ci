@@ -167,6 +167,8 @@ def ensure_daemon():
     """Verify the job's isolated Nix daemon; restart it once or fail with a clear category."""
     if os.environ.get('NIX_REMOTE') != 'daemon' or daemon_healthy():
         return
+    if os.environ.get('NIX_SHARED_DAEMON') == '1':
+        raise CommandFailure('Shared Icicle Nix daemon is unavailable; client jobs never start a daemon', 'daemon-unavailable')
     print('Isolated Nix daemon is unhealthy; restarting it', file=sys.stderr, flush=True)
     log = open('/tmp/nix-daemon.log', 'ab')
     env = {k: v for k, v in os.environ.items() if k != 'NIX_REMOTE'}
@@ -639,6 +641,10 @@ def retained_archive(rules, sha, system, record, roots, env):
     if not isinstance(path, str) or not STORE.fullmatch(path) or path.endswith('.drv'):
         raise ValueError('Invalid retained archive store path')
     phase('read-retained-archive')
+    if os.environ.get('NIX_SHARED_DAEMON') == '1':
+        # The shared daemon's untrusted listener deliberately does not trust
+        # the Niks3 key, so this import cannot become valid there.
+        raise ValueError('Retained archives cannot be read through the untrusted shared daemon')
     with tempfile.TemporaryDirectory(prefix='retained-archive-read-') as directory:
         reader = remote_env(env, directory)
         # Always read the outer archive NAR, even when a previous job imported it.
@@ -870,7 +876,8 @@ def source():
 def native_build_ready(rules, system, env):
     if rules.get('forge') != 'forgejo' or not system.endswith('-darwin'):
         return
-    native_build_admission(env)
+    if not rules.get('privateDarwin'):
+        native_build_admission(env)
 
 
 def native_build_admission(env):
@@ -883,6 +890,8 @@ def native_build_admission(env):
 
 
 def native_platform_ready(rules, system, env):
+    if rules.get('privateDarwin') and system.endswith('-darwin'):
+        return
     actual = run('nix', 'eval', '--impure', '--raw', '--expr', 'builtins.currentSystem', env=env)
     if actual == system:
         return
@@ -1234,11 +1243,18 @@ def build(system):
     if rules.get('kind') == 'fleet':
         raise ValueError('Fleet releases require the existing exact-release verifier')
     sha = source()
+    remote_proof = None
+    if rules.get('privateDarwin') and system.endswith('-darwin'):
+        remote_proof = module('tool-darwin.py').build(rules, system)
     PROGRESS.update(system=system, sha=sha)
     progress('starting', force=True)
     # Writer/forge tokens never enter Nix evaluation or package build processes.
     env = {k: v for k, v in os.environ.items()
-           if k not in {'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'STATUS_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'}}
+           if k not in {'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'STATUS_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL', 'PRIVATE_DARWIN_HMAC_KEY'}}
+    if remote_proof:
+        env['NIX_CONFIG'] = env.get('NIX_CONFIG', '')+'\nmax-jobs = 0\nbuilders = \n'
+    if remote_proof:
+        return finish_remote_build(rules, system, sha, remote_proof, env)
     phase('check-native-platform')
     native_platform_ready(rules, system, env)
     targets = rules['targets'][system]
@@ -1342,10 +1358,40 @@ def build(system):
         receipt = digest({'commit': sha, 'policy': digest(rules), 'system': system, 'closure': proof})
         if os.environ.get('GITHUB_OUTPUT'):
             with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+                stream.write(('darwin=' + remote_proof + '\n') if remote_proof else '')
                 stream.write('proof=' + receipt + '\nretention=' + manifest + '\n')
         print('Required builds, checks, upload and signed cache metadata passed for ' + system)
         progress('passed: ' + str(len(targets)) + ' targets, ' + str(len(distinct)) + ' distinct checks, '
                  + str(len(expected)) + ' signed closure paths', state='success')
+
+
+def finish_remote_build(rules, system, sha, encoded, env):
+    remote = module('tool-darwin.py')
+    env = remote.verification_environment(env)
+    result = remote.verify(encoded, rules, sha, system)
+    remote.verify_closure(result, sys.modules[__name__], env)
+    roots = evaluated_roots(rules, system, flake='git+file://'+str(ROOT)+'?rev='+sha, env=env)
+    remote.verify_roots(result,roots)
+    expected = remote_closure(roots, env)
+    proof = verify_published(roots, expected, env)
+    if os.environ.get('NIX_SHARED_DAEMON') == '1':
+        # Pinning needs the Darwin roots valid in the local store, and the
+        # shared daemon's untrusted listener refuses Niks3-signed imports (any
+        # Niks3 write-token holder could otherwise plant fleet outputs). The
+        # signed, verified Darwin closure stays in Niks3 for its push-age
+        # window without a retention pin; promotion accepts that.
+        print('Darwin release not pinned: the untrusted shared daemon cannot import Niks3 roots', flush=True)
+        manifest = ''
+    else:
+        with tempfile.TemporaryDirectory(prefix='remote-release-') as directory:
+            # Only substitution is allowed; Darwin builds already completed remotely.
+            run('nix','copy','--from',CACHE,*roots,env=env)
+            manifest = pin_release(rules,system,roots,env,dict(os.environ),directory)
+    if source() != sha:
+        raise ValueError('Source changed during release')
+    receipt = digest({'commit':sha,'policy':digest(rules),'system':system,'closure':proof})
+    with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+        output.write('proof='+receipt+'\nretention='+manifest+'\ndarwin='+encoded+'\n')
 
 
 def git_env(directory):
@@ -1372,6 +1418,21 @@ def promote(channel, revision, proofs, retention=None):
     retention = {k: v for k, v in (retention or {}).items() if v}
     if not set(retention) <= set(proofs) or any(not isinstance(v, str) or not MANIFEST.fullmatch(v) for v in retention.values()):
         raise ValueError('Invalid retention manifest')
+    if rules.get('privateDarwin'):
+        proof_directory = Path(os.environ.get('PRIVATE_DARWIN_PROOF_DIRECTORY', '/nonexistent-darwin-proofs'))
+        for system in rules['targets']:
+            if system.endswith('-darwin'):
+                remote = module('tool-darwin.py')
+                try:
+                    encoded=json.loads((proof_directory/(system+'.json')).read_text())
+                    if not isinstance(encoded,str):raise ValueError('Malformed Darwin proof')
+                except (OSError,ValueError):
+                    raise ValueError('Missing or malformed signed Darwin proof') from None
+                result = remote.verify(encoded, rules, revision, system)
+                verification_env=remote.verification_environment(dict(os.environ))
+                roots=evaluated_roots(rules,system,flake='git+file://'+str(ROOT)+'?rev='+revision,env=verification_env)
+                remote.verify_roots(result,roots)
+                remote.verify_closure(result, sys.modules[__name__], verification_env)
     url = rules['remote']
     if url not in {'https://github.com/' + rules['repository'] + '.git',
                    'https://git.monke.fail/' + rules['repository'] + '.git'}:

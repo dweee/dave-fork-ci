@@ -146,3 +146,54 @@ controller accepts only its explicit per-platform route allowlist; arbitrary
 labels, expressions and cross-platform overrides fail before preparation.
 A label does not prove the toolchain version: retain the owning package's
 native OS/SDK checks and treat an unavailable matching runner as pending.
+
+### Forgejo private Darwin route and shared daemon
+
+Both are explicit opt-ins. Without `forgejoSharedDaemon`, regeneration emits
+exactly the previous workflows and helper set: plain `nixos/nix` containers, or
+the per-job isolated Determinate daemon for `forgejoDeterminateLabels`.
+
+`forgejoSharedDaemon: true` (Forgejo only) makes every generated Icicle `nix`,
+`nix-light` and `darwin-tools` job connect through `ci/connect-shared-daemon.sh`
+to the untrusted listener of Icicle's one shared store. Those jobs mount the
+read-only aliases `flakey-ci-nix-pr-v2-ro:/nix:ro` and
+`flakey-ci-nix-pr-socket-untrusted-ro` (so no job can replace the listener's
+socket), never the store or socket volumes, the trusted socket or the fleet's
+credential tmpfs; they start no private daemon or new store. As untrusted
+clients they can build, add content-addressed paths and add signatures, but the
+daemon ignores restricted client settings and trusts no Niks3 key: Niks3 signs
+whatever any write-token holder pushes, so trusting it would let one repository
+plant another's (or the fleet's) outputs. Substitution therefore comes only
+from public caches, and everything else is built. Niks3 uploads and signed-cache
+checks keep using the job's own credentials client-side. Two flows that import
+Niks3 paths cannot run on the shared daemon: retained archives (the generator
+refuses the opt-in for a repository with `ci/retained-archives.json`) and the
+private Darwin retention pin (Darwin releases are published and verified but
+not pinned, so Niks3 keeps them for its push-age window). The opt-in also
+requires the shared daemon's exact image, since the connector pins its Nix. Opt in only after the owner
+has deployed the matching runner/DinD/socket layout from Flakey; until then the
+light runner does not admit those volumes and the connector times out. The
+daemon alone writes store files; tool jobs are never trusted clients of it.
+
+`privateDarwin` requires `forgejoSharedDaemon`. After host/runtime
+qualification, set it with public `attestorPublicKeys` and exact `clientCommit`
+and `providerCommit`. Promotion trusts exactly those attestor keys from the tool
+repository's own reviewed `ci/channels.json`; changing them is a reviewed change
+to that repository, and the host worker still only signs for admitted commits.
+Darwin waits use the separate bounded `darwin-tools` label and a repository's
+8 MiB metadata-only volume at `/run/darwin-tool-metadata`; that volume is not a
+Nix store. The client stops waiting 45 minutes before the 6-hour job timeout so
+its cancellation, verification and pinning always run. Provision
+`PRIVATE_DARWIN_HMAC_KEY`, `FLAKEY_NIKS3_READ_NETRC` and the existing cache
+publication grant in each tool repo. Host readers and HMACs are
+repository-specific. Every changed tool commit requires an exact reviewed
+Flakey admission PR, drain and reinstall before it can build. The host worker
+never uses the shared store: it fetches, evaluates, admits, builds and hashes
+each request in its own disposable per-request store, independently checks the
+admitted source before fetching, fetches locked inputs with its scoped reader,
+then evaluates offline without credentials/network. Promotion verifies signed
+proof files and the exact selected cache closure; forge tokens never reach its
+Nix verifier. GitHub counterpart workflows keep their existing route. Intel
+requires qualified Rosetta/Nix compatibility. Flakey's
+`docs/ci/private-tool-darwin.md` contains the installation, key validation,
+runtime qualification and verified rollback steps.
