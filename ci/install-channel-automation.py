@@ -411,7 +411,8 @@ def install(args):
         {'name': 'Monitor manual package/file pins', 'id': 'monitor', 'env': {'GH_TOKEN': expr('github.token') if github else expr('secrets.GH_READ_TOKEN'),
                     'MONITOR_TOKEN': expr('github.token') if not github else ''},
          'run': python('ci/update-monitor.py')},
-        {'name': 'Maintain one version monitoring issue', 'if': expr('always()'),
+        {'name': 'Maintain one version monitoring issue',
+         'if': expr('always() && github.event.repository.has_issues' if github else 'always()'),
          'env': {'AUTOMATION_TOKEN': expr('secrets.UPDATE_TOKEN || github.token')},
          'run': python('ci/automation-forge.py report')}]
     jobs = {'monitor': monitor}
@@ -425,6 +426,10 @@ def install(args):
              'run': python('ci/update-inputs.py')},
             {'name': 'Open a review PR for changed pins', 'env': {'AUTOMATION_TOKEN': expr('secrets.UPDATE_TOKEN || github.token')},
              'run': python('ci/automation-forge.py inputs')}]
+        if github:
+            updater['permissions'] = {'contents': 'write', 'pull-requests': 'write',
+                                      'actions': 'write', 'statuses': 'write'}
+            updater['steps'][-1]['env']['AUTOMATION_STATUS_TOKEN'] = expr('github.token')
         jobs['inputs'] = updater
     write('scheduled-updates.yml', {'name': 'Input and manual version monitoring',
           'on': {'schedule': [{'cron': updates_cron(args.repository)}], 'workflow_dispatch': {}},
@@ -534,8 +539,10 @@ Required repository configuration:
   The updater explicitly dispatches them on the update branch head, including
   when using GITHUB_TOKEN. Each workflow must keep cache publication and secrets
   restricted to the trusted source branch. The updater requires Actions write.
-- Optional `UPDATE_TOKEN` is a repository-scoped app/PAT; default GITHUB_TOKEN
-  PRs do not emit further pull_request workflow events.
+  It waits for the dispatched PR checks workflow’s `test` job on the exact head
+  and publishes its success with the GitHub Actions token and Statuses write.
+- Optional `UPDATE_TOKEN` is a repository-scoped app/PAT. With GITHUB_TOKEN,
+  GitHub requires approval before the pull_request workflow runs.
 - Each update is a commit of the current target branch plus the new pins, with
   the previous update head as a parent, so the branch only moves forward and is
   never force-pushed. A candidate whose checks are still pending is left to

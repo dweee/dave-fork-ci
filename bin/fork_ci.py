@@ -43,7 +43,7 @@ def git(repo, *args, check=True, extra_env=None, input_data=None):
                              '-c', 'core.fsmonitor=false', '-c', 'protocol.file.allow=never',
                              *args], cwd=repo, env=env, capture_output=True, input=input_data)
     if check and result.returncode:
-        raise Blocked('Git operation failed; resolve conflicts or repository policy locally')
+        raise Blocked('Git ' + args[0] + ' failed; check repository policy and permissions')
     return result
 
 
@@ -237,7 +237,10 @@ def merge_candidate(repo, base, targets, policy, state):
             conflicts = unmerged(repo)
             if not conflicts or any(not path_protected(path, policy) for path in conflicts):
                 git(repo, 'merge', '--abort', check=False)
-                raise Blocked('Git operation failed; resolve conflicts or repository policy locally')
+                if conflicts:
+                    paths = ', '.join(ascii(path) for path in conflicts[:10])
+                    raise Blocked('Upstream merge conflicts require local resolution: ' + paths)
+                raise Blocked('Git could not start the upstream merge')
         restore_protected(repo, base, policy)
         guard(repo, base, 'HEAD', policy)
         # A pending merge is in the index; HEAD still points at its first parent.
@@ -398,7 +401,7 @@ def gate(args, sleep=time.sleep, timeout=1800):
     from the candidate.
 
     GitHub does not count that workflow_dispatch check run toward the default
-    branch's ruleset (the push is refused with 'Required status check "test"
+    branch's ruleset (the merge is refused with 'Required status check "test"
     is expected'), so once it has passed, record the same result as a commit
     status on the exact candidate. The status is written by GitHub Actions, the
     integration the ruleset names, and only after the real check succeeded.
@@ -409,36 +412,41 @@ def gate(args, sleep=time.sleep, timeout=1800):
         raise Blocked('Invalid check workflow or name')
     base = 'repos/' + args.repository
     branch = 'sync/upstream/' + args.candidate
-    workflow = github_call('GET', base + '/actions/workflows/' + args.workflow)
-    if workflow is None:
+    endpoint = base + '/actions/workflows/' + args.workflow
+    if github_call('GET', endpoint) is None:
         print('No ' + args.workflow + ' workflow; promotion relies on the repository ruleset as configured.')
         emit({'gated': 'skipped'})
         return
-    if github_call('POST', base + '/actions/workflows/' + args.workflow + '/dispatches', {'ref': branch}) is None:
-        # No workflow_dispatch trigger on that branch yet: let the push decide.
-        print(args.workflow + ' cannot be dispatched on the candidate branch; promotion relies on the repository ruleset as configured.')
-        emit({'gated': 'skipped'})
-        return
+    query = urllib.parse.urlencode({'head_sha': args.candidate, 'branch': branch,
+                                    'event': 'workflow_dispatch', 'per_page': 20})
+    runs_endpoint = endpoint + '/runs?' + query
+    if github_call('POST', endpoint + '/dispatches', {'ref': branch}) is None:
+        raise Blocked('Configured check workflow cannot be dispatched: ' + args.workflow)
     waited = 0
     while waited <= timeout:
-        runs = github_call('GET', base + '/commits/' + args.candidate + '/check-runs?check_name=' + urllib.parse.quote(args.check) + '&per_page=100')
-        runs = [r for r in (runs or {}).get('check_runs', [])
-                if r.get('head_sha') == args.candidate and (r.get('app') or {}).get('slug') == 'github-actions']
-        passed = [r for r in runs if r.get('status') == 'completed' and r.get('conclusion') == 'success']
-        if passed:
-            status = {'state': 'success', 'context': args.check,
-                      'description': 'Passed on sync/upstream/' + args.candidate[:12]}
-            if isinstance(passed[0].get('html_url'), str) and passed[0]['html_url'].startswith('https://github.com/'):
-                status['target_url'] = passed[0]['html_url']
-            if github_call('POST', base + '/statuses/' + args.candidate, status) is None:
-                raise Blocked('Could not record the passing ' + args.check + ' result on the candidate')
-            emit({'gated': 'passed'})
-            return
-        if runs and all(r.get('status') == 'completed' for r in runs):
-            raise Blocked('Required check ' + args.check + ' did not pass on the candidate')
-        sleep(15)
-        waited += 15
-    raise Blocked('Timed out waiting for required check ' + args.check)
+        runs = (github_call('GET', runs_endpoint) or {}).get('workflow_runs', [])
+        run = next((run for run in runs if run.get('head_sha') == args.candidate
+                    and run.get('head_branch') == branch and run.get('event') == 'workflow_dispatch'), None)
+        if run and run.get('status') == 'completed':
+            break
+        if waited == timeout:
+            raise Blocked('Timed out waiting for required check ' + args.check)
+        delay = min(15, timeout - waited)
+        sleep(delay)
+        waited += delay
+    if run.get('conclusion') != 'success':
+        raise Blocked('Configured check workflow did not pass on the candidate')
+    jobs = github_call('GET', base + '/actions/runs/' + str(run['id']) + '/jobs')
+    checks = [job for job in (jobs or {}).get('jobs', [])
+              if job.get('head_sha') == args.candidate and job.get('name') == args.check]
+    if len(checks) != 1 or checks[0].get('conclusion') != 'success':
+        raise Blocked('Required check ' + args.check + ' did not pass on the candidate')
+    status = {'state': 'success', 'context': args.check,
+              'description': 'Passed on sync/upstream/' + args.candidate[:12],
+              'target_url': 'https://github.com/' + args.repository + '/actions/runs/' + str(run['id'])}
+    if github_call('POST', base + '/statuses/' + args.candidate, status) is None:
+        raise Blocked('Could not record the passing ' + args.check + ' result on the candidate')
+    emit({'gated': 'passed'})
 
 
 def promote(args):
@@ -455,8 +463,37 @@ def promote(args):
         raise Blocked('Candidate branch changed after its build')
     policy = validate_policy(json.loads(tree_bytes(repo, args.base, '.fork-ci.json')))
     verify(repo, args.base, args.candidate, target, policy)
-    push(repo, url, args.candidate, 'refs/heads/' + args.target, expected=args.base)
+    merge_candidate_pr(args)
     emit({'promoted': args.candidate})
+
+
+def merge_candidate_pr(args):
+    prefix = 'repos/' + args.repository
+    branch = 'sync/upstream/' + args.candidate
+    query = urllib.parse.urlencode({'head': args.repository.split('/')[0] + ':' + branch,
+                                    'base': args.target, 'state': 'open'})
+    existing = github_call('GET', prefix + '/pulls?' + query)
+    if not isinstance(existing, list) or len(existing) > 1:
+        raise Blocked('Could not identify a unique upstream candidate pull request')
+    pr = existing[0] if existing else github_call(
+        'POST', prefix + '/pulls',
+        {'title': 'Sync tested upstream candidate ' + args.candidate[:12],
+         'body': 'The guarded upstream sync built this exact candidate and passed its configured gates.',
+         'head': branch, 'base': args.target})
+    if not pr:
+        raise Blocked('Could not open the upstream candidate pull request')
+    endpoint = prefix + '/pulls/' + str(pr['number'])
+    live = github_call('GET', endpoint)
+    if (not live or live.get('state') != 'open'
+            or live.get('head', {}).get('sha') != args.candidate
+            or live.get('base', {}).get('sha') != args.base
+            or live.get('base', {}).get('ref') != args.target):
+        raise Blocked('Pull request head or base changed after candidate validation')
+    result = github_call('PUT', endpoint + '/merge',
+                         {'sha': args.candidate, 'merge_method': 'merge'})
+    if not result or not result.get('merged'):
+        raise Blocked('GitHub did not merge the candidate pull request; check its repository rules')
+    print('Merged upstream candidate pull request #' + str(pr['number']))
 
 
 def main():

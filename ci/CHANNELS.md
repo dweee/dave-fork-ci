@@ -90,8 +90,10 @@ Required repository configuration:
   The updater explicitly dispatches them on the update branch head, including
   when using GITHUB_TOKEN. Each workflow must keep cache publication and secrets
   restricted to the trusted source branch. The updater requires Actions write.
-- Optional `UPDATE_TOKEN` is a repository-scoped app/PAT; default GITHUB_TOKEN
-  PRs do not emit further pull_request workflow events.
+  It waits for the dispatched PR checks workflow’s `test` job on the exact head
+  and publishes its success with the GitHub Actions token and Statuses write.
+- Optional `UPDATE_TOKEN` is a repository-scoped app/PAT. With GITHUB_TOKEN,
+  GitHub requires approval before the pull_request workflow runs.
 - Each update is a commit of the current target branch plus the new pins, with
   the previous update head as a parent, so the branch only moves forward and is
   never force-pushed. A candidate whose checks are still pending is left to

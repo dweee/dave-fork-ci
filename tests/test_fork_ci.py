@@ -96,12 +96,14 @@ class MergeTests(unittest.TestCase):
         import argparse
         return argparse.Namespace(repository='owner/tool', candidate='c' * 40, workflow='pr-checks.yml', check='test')
 
-    def run_for(self, status, conclusion='success', app='github-actions'):
-        return {'check_runs': [{'head_sha': 'c' * 40, 'status': status, 'conclusion': conclusion, 'app': {'slug': app}}]}
+    def run_for(self, status, conclusion='success', sha='c' * 40):
+        return {'workflow_runs': [{'id': 123, 'head_sha': sha, 'status': status, 'conclusion': conclusion,
+                                   'head_branch': 'sync/upstream/' + sha, 'event': 'workflow_dispatch'}]}
 
     def test_gate_dispatches_the_check_on_the_candidate_branch_and_waits_for_success(self):
         calls = []
-        replies = iter([{}, {}, self.run_for('queued', None), self.run_for('completed'), {}])
+        jobs = {'jobs': [{'name': 'test', 'head_sha': 'c' * 40, 'conclusion': 'success'}]}
+        replies = iter([{}, {}, self.run_for('queued', None), self.run_for('completed'), jobs, {}])
         def call(method, endpoint, payload=None):
             calls.append((method, endpoint, payload))
             return next(replies)
@@ -109,36 +111,39 @@ class MergeTests(unittest.TestCase):
             ci.gate(self.gate_args(), sleep=lambda n: None)
         self.assertEqual(calls[1], ('POST', 'repos/owner/tool/actions/workflows/pr-checks.yml/dispatches',
                                     {'ref': 'sync/upstream/' + 'c' * 40}))
-        # The ruleset ignores the dispatched check run, so its result is recorded
-        # as a commit status on the exact candidate before promotion.
+        self.assertIn('pr-checks.yml/runs?head_sha=' + 'c' * 40, calls[2][1])
         self.assertEqual(calls[-1][:2], ('POST', 'repos/owner/tool/statuses/' + 'c' * 40))
         self.assertEqual((calls[-1][2]['state'], calls[-1][2]['context']), ('success', 'test'))
         emit.assert_called_with({'gated': 'passed'})
 
     def test_gate_blocks_when_the_status_cannot_be_recorded(self):
-        replies = iter([{}, {}, self.run_for('completed'), None])
+        jobs = {'jobs': [{'name': 'test', 'head_sha': 'c' * 40, 'conclusion': 'success'}]}
+        replies = iter([{}, {}, self.run_for('completed'), jobs, None])
         with patch.object(ci, 'github_call', lambda *a, **k: next(replies)), patch.object(ci, 'emit') as emit:
             with self.assertRaises(ci.Blocked):
                 ci.gate(self.gate_args(), sleep=lambda n: None)
         emit.assert_not_called()
 
     def test_gate_rejects_failed_foreign_and_missing_checks(self):
-        for runs in [self.run_for('completed', 'failure'), self.run_for('completed', 'success', app='someone-else')]:
-            replies = iter([{}, {}, runs])
+        for runs, jobs in [
+                (self.run_for('completed', 'failure'), {}),
+                (self.run_for('completed', sha='d' * 40), {}),
+                (self.run_for('completed'), {'jobs': [{'name': 'test', 'head_sha': 'c' * 40, 'conclusion': 'skipped'}]}),
+                ({'workflow_runs': []}, {})]:
+            replies = iter([{}, {}, runs, jobs])
             with self.subTest(runs=runs), patch.object(ci, 'github_call', lambda *a, **k: next(replies)):
                 with self.assertRaises(ci.Blocked):
                     ci.gate(self.gate_args(), sleep=lambda n: None, timeout=0)
-        replies = iter([{}, {}] + [{'check_runs': []}] * 5)
-        with patch.object(ci, 'github_call', lambda *a, **k: next(replies)):
-            with self.assertRaises(ci.Blocked):
-                ci.gate(self.gate_args(), sleep=lambda n: None, timeout=30)
 
-    def test_gate_is_skipped_when_the_workflow_cannot_be_dispatched(self):
-        for replies in [[None], [{}, None]]:
-            replies = iter(replies)
-            with patch.object(ci, 'github_call', lambda *a, **k: next(replies)), patch.object(ci, 'emit') as emit:
+    def test_gate_defers_to_the_ruleset_when_no_check_workflow_exists(self):
+        with patch.object(ci, 'github_call', return_value=None), patch.object(ci, 'emit') as emit:
+            ci.gate(self.gate_args(), sleep=lambda n: None)
+        emit.assert_called_once_with({'gated': 'skipped'})
+
+    def test_gate_blocks_when_configured_workflow_cannot_be_dispatched(self):
+        with patch.object(ci, 'github_call', side_effect=[{}, None]):
+            with self.assertRaisesRegex(ci.Blocked, 'cannot be dispatched'):
                 ci.gate(self.gate_args(), sleep=lambda n: None)
-            emit.assert_called_with({'gated': 'skipped'})
 
     def test_promotion_rejects_main_advanced_since_build(self):
         candidate = self.candidate(self.upstream())
