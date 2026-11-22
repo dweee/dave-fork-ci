@@ -34,6 +34,8 @@ source branch that only touch the paths listed under `paths-ignore` in
 commit until the next qualifying push, the nightly run or an owner dispatch
 publishes the current head. Confirm that no ignored path feeds a package.
 '''
+SHARED_DAEMON_IMAGE = 'sha256:2d46fea208b4e0a6440e121cca451e86e5c557926038af31f921f303d455cdcf'
+ICICLE_LABELS = {'nix','nix-light','darwin-tools'}
 HELPERS = ['caches.json', 'cache-config.py', 'release-channel.py', 'test-release-channel.py', 'update-inputs.py',
            'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-niks3.py', 'push-niks3.py', 'test-push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh',
            'retain-build-outputs.py', 'test-retain-build-outputs.py', 'transfer-closures.py', 'test-transfer-closures.py']
@@ -41,6 +43,10 @@ HELPERS = ['caches.json', 'cache-config.py', 'release-channel.py', 'test-release
 # the installer removes these so a regenerated repository keeps no stale copy.
 RETIRED_HELPERS = ['configure-attic-read.py', 'test-configure-attic-read.py', 'push-attic.py', 'test-push-attic.py',
                    'transfer-attic.py', 'test-transfer-attic.py']
+# Installed only for repositories that opt in, so regenerating any other
+# repository emits exactly its previous helper set and workflows.
+SHARED_DAEMON_HELPERS = ['connect-shared-daemon.sh']
+PRIVATE_DARWIN_HELPERS = ['tool-darwin.py', 'tool-darwin-evaluate.py', 'tool-darwin-protocol.py', 'tool-darwin-spool.py']
 
 
 # Bounded Nix downloads: fail fast on a dead connection and retry transient DNS,
@@ -150,8 +156,30 @@ def install(args):
     labels = config.get('forgejoDeterminateLabels', [])
     if image is not None and (github or not isinstance(image, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image)):
         raise SystemExit('forgejoDeterminateImage must be a pinned local image ID on Forgejo')
-    if not isinstance(labels, list) or any(label not in ('nix', 'nix-light') for label in labels) or (labels and image is None):
+    # Explicit opt-in to Icicle's one shared daemon/store. It needs the runner,
+    # socket and volume layout from Flakey's shared-store cutover; without it
+    # every job keeps its previous container, daemon and mounts exactly.
+    shared = config.get('forgejoSharedDaemon', False)
+    if not isinstance(shared, bool) or (shared and github):
+        raise SystemExit('forgejoSharedDaemon must be a boolean and applies only to Forgejo repositories')
+    allowed = ('nix', 'nix-light', 'darwin-tools') if shared else ('nix', 'nix-light')
+    if not isinstance(labels, list) or any(label not in allowed for label in labels) or (labels and image is None):
         raise SystemExit('forgejoDeterminateLabels must list nix or nix-light and require an image')
+    if shared and image not in (None, SHARED_DAEMON_IMAGE):
+        # The connector pins the daemon's exact Nix; another image fails it.
+        raise SystemExit('forgejoSharedDaemon jobs must use the shared daemon image')
+    if shared and (root / 'ci/retained-archives.json').exists():
+        # Reading a retained archive imports a Niks3-signed path into the
+        # store, which the shared daemon's untrusted listener refuses.
+        raise SystemExit('forgejoSharedDaemon cannot be combined with retained archives')
+    if config.get('privateDarwin'):
+        if github:
+            raise SystemExit('privateDarwin currently admits Forgejo Darwin only')
+        if not shared:
+            raise SystemExit('privateDarwin requires the explicit forgejoSharedDaemon opt-in')
+        route = config['privateDarwin']
+        if (not route.get('attestorPublicKeys') or any(not re.fullmatch('[a-f0-9]{40}', route.get(k, '')) for k in ('clientCommit','providerCommit'))):
+            raise SystemExit('privateDarwin requires reviewed attestors and executor pins')
     counterpart = config.get('githubCounterpartCi', False)
     if not isinstance(counterpart, bool) or (counterpart and github):
         raise SystemExit('githubCounterpartCi must be a boolean and applies only to Forgejo repositories')
@@ -167,7 +195,8 @@ def install(args):
     monitor = ci / 'update-monitor.json'
     if not monitor.exists():
         monitor.write_text(json.dumps({'version': 1, 'checks': [], 'exclude': [], 'upstreams': []}, indent=2)+'\n')
-    for name in HELPERS:
+    helpers = HELPERS + (SHARED_DAEMON_HELPERS if shared else []) + (PRIVATE_DARWIN_HELPERS if config.get('privateDarwin') else [])
+    for name in helpers:
         if ci / name != HERE / name:
             shutil.copy2(HERE / name, ci / name)
     if not (ci / 'public-closure.py').exists():
@@ -182,7 +211,7 @@ def install(args):
     if missing:
         ignore.write_text('\n'.join(lines + missing) + '\n')
     (ci / 'channels.json').write_text(json.dumps(config, indent=2)+'\n')
-    hashes = {name: hashlib.sha256((ci/name).read_bytes()).hexdigest() for name in HELPERS}
+    hashes = {name: hashlib.sha256((ci/name).read_bytes()).hexdigest() for name in helpers}
     (ci / 'channel-tool-hashes.json').write_text(json.dumps(hashes, indent=2)+'\n')
     workflow_dir = root / ('.github/workflows' if github else '.forgejo/workflows')
     workflow_dir.mkdir(parents=True, exist_ok=True)
@@ -206,6 +235,11 @@ def install(args):
                         'git checkout -q --detach FETCH_HEAD\n'}]
     def bootstrap(cores=1, runner=None):
         if not github:
+            if shared:
+                if runner not in ICICLE_LABELS:
+                    return []
+                return [{'name':'Connect to the shared Icicle Nix daemon',
+                         'run':'bash ci/connect-shared-daemon.sh'}]
             if not image or runner not in labels:
                 return []
             return [{'name': 'Start isolated Determinate daemon', 'run':
@@ -237,9 +271,20 @@ def install(args):
         result = {'runs-on': runner or default_runner, 'timeout-minutes': 360, 'env': {'PYTHONDONTWRITEBYTECODE': '1'}}
         if not github:
             result['env']['NIX_CONFIG'] = NIX_CONF_FORGEJO
-        if not github and result['runs-on'] in {'nix', 'nix-light'}:
+        if not github and result['runs-on'] in {'nix', 'nix-light', 'darwin-tools'}:
             result['container'] = {'image': 'nixos/nix@sha256:7a007c766426c1877758ddc5cb87a965ac131fc78c582ce0083d922d51ae945c'}
-            if image and result['runs-on'] in labels:
+            if shared and result['runs-on'] in ICICLE_LABELS:
+                # Tool jobs are untrusted clients of the one shared store:
+                # read-only aliases of it and of the untrusted listener's
+                # socket directory (so no job can replace that socket), never
+                # the store or socket volumes, trusted socket or creds tmpfs.
+                result['container'] = {'image': image or SHARED_DAEMON_IMAGE, 'volumes': [
+                    'flakey-ci-nix-pr-v2-ro:/nix:ro',
+                    'flakey-ci-nix-pr-socket-untrusted-ro:/nix/var/nix/daemon-socket:ro']}
+                result['env']['NIX_REMOTE'] = 'daemon'
+                result['env']['NIX_SHARED_DAEMON'] = '1'
+                result['env']['NIX_CONFIG'] += 'extra-experimental-features = parallel-eval\neval-cores = 2\n'
+            elif image and result['runs-on'] in labels:
                 result['container'] = {'image': image}
                 result['env']['NIX_REMOTE'] = 'daemon'
                 result['env']['NIX_CONFIG'] += 'extra-experimental-features = parallel-eval\neval-cores = 2\n'
@@ -274,13 +319,14 @@ def install(args):
         jobs = {'test': test}
         proofs = {}
         manifests = {}
+        darwin_proofs = {}
         needed = ['test']
         for system in config['targets']:
             key = 'build_' + system.replace('-', '_')
             native = job(({'x86_64-linux': 'ubuntu-24.04', 'aarch64-linux': 'ubuntu-24.04-arm',
                            'aarch64-darwin': 'macos-15', 'x86_64-darwin': 'macos-15-intel'} if github else
                           {'x86_64-linux': 'nix', 'aarch64-linux': 'braco',
-                           'aarch64-darwin': 'darwin-aarch64', 'x86_64-darwin': 'darwin-x86_64'})[system], cache=True)
+                           'aarch64-darwin': 'darwin-tools' if config.get('privateDarwin') else 'darwin-aarch64', 'x86_64-darwin': 'darwin-tools' if config.get('privateDarwin') else 'darwin-x86_64'})[system], cache=True)
             native.update(needs=['test'], outputs={'proof': expr('steps.release.outputs.proof'),
                                                    'retention': expr('steps.release.outputs.retention')},
                           **{'if': expr("github.event_name != 'pull_request' && " + trusted_ref)})
@@ -311,7 +357,7 @@ def install(args):
                  'run': shell('bash ci/install-niks3.sh --retain-bootstrap')},
                 {'name': 'Publish bootstrap client and completed build dependencies',
                  'run': python('ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt', readonly=True)}]
-            if not github and system.endswith('-darwin'):
+            if not github and system.endswith('-darwin') and not config.get('privateDarwin'):
                 # The host owns scheduling, power and capacity policy. Recheck
                 # before tool bootstraps; the release helper also checks before
                 # every package/check build in an already accepted job.
@@ -320,6 +366,14 @@ def install(args):
                         step['run'] = '"$NATIVE_BUILD_ADMISSION_COMMAND"\n' + step['run']
                 native['steps'][0]['run'] = ('test -n "${NATIVE_BUILD_ADMISSION_COMMAND:-}"\n'
                     '"$NATIVE_BUILD_ADMISSION_COMMAND"\n' + native['steps'][0]['run'])
+            if not github and config.get('privateDarwin') and system.endswith('-darwin'):
+                native['timeout-minutes'] = 360
+                native['container']['volumes'] += ['flakey-darwin-tool-'+args.repository.split('/')[1]+'-metadata:/run/darwin-tool-metadata']
+                native['outputs']['darwin'] = expr('steps.release.outputs.darwin')
+                darwin_proofs[system] = expr('needs.'+key+'.outputs.darwin')
+                for step in native['steps']:
+                    if 'release-channel.py build' in step.get('run', ''):
+                        step['env']['PRIVATE_DARWIN_HMAC_KEY'] = expr('secrets.PRIVATE_DARWIN_HMAC_KEY')
             jobs[key] = native
             # Retention disables builders and only evaluates paths/reads NARs.
             # aarch64 Linux retention runs on the native braco runner (one job
@@ -351,6 +405,21 @@ def install(args):
                      'REVISION': expr('needs.test.outputs.revision'),
                      'CHANNEL': expr("inputs.channel || 'tested'")},
              'run': python('ci/release-channel.py promote --channel "$CHANNEL" --revision "$REVISION" --proofs "$RELEASE_PROOFS" --retention "$RELEASE_RETENTION"')}]
+        if config.get('privateDarwin'):
+            proof_script = 'mkdir -p /tmp/darwin-release-proofs\n'
+            for proof_system, expression in darwin_proofs.items():
+                # toJSON makes the substitution a JSON string; the heredoc is
+                # inert base64 data generated by the trusted build helper.
+                proof_script += ("cat > /tmp/darwin-release-proofs/"+proof_system+".json <<'DARWIN_PROOF'\n"
+                                 +expr('toJSON('+expression.removeprefix('${{ ').removesuffix(' }}')+')')+"\nDARWIN_PROOF\n")
+            promoter['steps'].insert(-1, {'name':'Materialize signed Darwin proof files','run':proof_script})
+            promote_step=promoter['steps'][-1]
+            promote_step['env']['PRIVATE_DARWIN_PROOF_DIRECTORY']='/tmp/darwin-release-proofs'
+            promoter['steps'].insert(-1, {'name':'Configure cache reader for signed worker closure binding',
+                'env':{'NIKS3_READ_NETRC':expr('secrets.FLAKEY_NIKS3_READ_NETRC')},
+                'run':python('ci/configure-niks3.py')})
+            promoter['steps'].append({'name':'Remove cache reader', 'if':expr('always()'),
+                'run':python('ci/configure-niks3.py --cleanup', readonly=True)})
         jobs['promote'] = promoter
         triggers = {
             'push': {'branches': [args.branch]},
