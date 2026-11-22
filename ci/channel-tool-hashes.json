@@ -3,7 +3,7 @@
   "test-release-channel.py": "de644b85a7cec55cb2241630b185e298b7dd58fb542a42a339db61f92929f9b2",
   "update-inputs.py": "ce66ee5c77a8b731cee10390c4123b9e467cb376e2443343fdf724baaecfb66f",
   "update-monitor.py": "ff1867c18ef4f549a0d7f84eb828f6a3e44b1575d4d42113bca770ff06e09c74",
-  "test-update-automation.py": "73ced52d410af3110d270dd299db6d7a5b9ef3d711d33a8a8abc6b10bd6c1ce7",
+  "test-update-automation.py": "545315e6d019ca26a8d0618377ca8c1533c4565599aeefc7ac4cc78988d156b8",
   "automation-forge.py": "1a810c9614cc40b6f48682a104e58e07657701ceb0212a0d1b808a77c825f60d",
   "configure-attic-read.py": "4b663ae0e073327dbcdcdaabef23a58a0a241f2f0fcfe3fd5f351b9242cbf669",
   "configure-niks3.py": "2820bbb9dd54f85040f1b79a6921f10632c397d154a26cedf5f5ab7ee4b1819b",

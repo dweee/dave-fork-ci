@@ -568,7 +568,7 @@ class InputUpdatePR(unittest.TestCase):
         self.forge = FakeForge()
         with patch.object(a, 'attribution', return_value=''), patch.object(a, 'publish_input_status') as status:
             self.publish(2, forge='github')
-        status.assert_called_once_with(dict(self.rules, forge='github'), '/repos/o/r', 1, self.branch())
+        status.assert_called_once_with(dict(self.rules, forge='github'), '/repos/o/r', self.forge.prs[0]['number'], self.branch())
         self.assertEqual(self.forge.made('POST', '/merge'), [])
         runs = [c for c in self.forge.calls if '/actions/workflows/pr-checks.yml/runs?head_sha=' + self.branch() in c[1]]
         self.assertEqual(len(runs), 1)
