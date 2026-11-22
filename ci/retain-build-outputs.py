@@ -18,7 +18,7 @@ def load(name):
 
 channel = load('release-channel')
 public = load('public-closure')
-WRITERS = {'ATTIC_TOKEN', 'FLAKEY_ATTIC_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE'}
+WRITERS = {'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE'}
 
 
 def build_environment(environ):

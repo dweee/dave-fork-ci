@@ -99,7 +99,7 @@ class MigrationSemantics(unittest.TestCase):
         reader = next(i for i, s in enumerate(steps) if s.get('run') == 'python3 ci/configure-niks3.py --oidc')
         build = next(i for i, s in enumerate(steps) if s.get('run') == RETAINED_BUILD_RUN)
         cleanup = next(i for i, s in enumerate(steps) if s.get('run') == 'python3 ci/configure-niks3.py --cleanup')
-        export = next(i for i, s in enumerate(steps) if 'ci/transfer-attic.py export' in s.get('run', ''))
+        export = next(i for i, s in enumerate(steps) if 'ci/transfer-closures.py export' in s.get('run', ''))
         self.assertEqual(steps[reader]['if'], READER_GUARD)
         self.assertEqual(steps[cleanup]['if'], '${{ always() }}')
         self.assertLess(reader, build)
@@ -130,10 +130,10 @@ class MigrationSemantics(unittest.TestCase):
             self.assertEqual(after['jobs'][job]['needs'] if job == 'publish' else after['jobs'][job]['strategy'], before['jobs'][job]['needs'] if job == 'publish' else before['jobs'][job]['strategy'])
             for step in before['jobs'][job]['steps']:
                 if ('ci/transfer-attic.py' in step.get('run', '') and ' export ' not in step['run']) or 'actions/download-artifact@' in step.get('uses', ''):
-                    self.assertIn(step, after['jobs'][job]['steps'])
+                    self.assertIn(migration.retired_names(step), after['jobs'][job]['steps'])
                 elif 'actions/upload-artifact@' in step.get('uses',''):
                     actual=next(s for s in after['jobs'][job]['steps'] if s.get('uses')==step['uses'])
-                    self.assertEqual(actual['with'],step['with'])
+                    self.assertEqual(actual['with'],migration.retired_names(step['with']))
                     self.assertIn("steps.cache_transfer.outcome == 'success'",actual['if'])
         self.assertEqual(after['jobs']['build']['permissions'], {'contents': 'read', 'checks': 'read', 'id-token': 'write'})
         self.assertEqual(after['jobs']['publish']['permissions'], {'contents': 'read', 'id-token': 'write'})
@@ -141,17 +141,17 @@ class MigrationSemantics(unittest.TestCase):
     def test_dual_publisher_becomes_exactly_one_niks3_publication(self):
         after, _ = migration.migrate_document(native_workflow())
         runs = [s.get('run', '') for s in after['jobs']['publish']['steps']]
-        self.assertEqual(sum(run == 'python3 ci/push-niks3.py --outputs attic-transfer/outputs.txt' for run in runs), 1)
+        self.assertEqual(sum(run == 'python3 ci/push-niks3.py --outputs closure-transfer/outputs.txt' for run in runs), 1)
         self.assertEqual(sum(run == migration.INSTALL_NIKS3 for run in runs), 1)
-        self.assertLess(runs.index(migration.INSTALL_NIKS3), runs.index('python3 ci/transfer-attic.py import --directory attic-transfer'))
+        self.assertLess(runs.index(migration.INSTALL_NIKS3), runs.index('python3 ci/transfer-closures.py import --directory closure-transfer'))
 
     def test_attic_only_publisher_installs_niks3_before_import(self):
         after, _ = migration.migrate_document(native_workflow(dual=False))
         steps = after['jobs']['publish']['steps']
         runs = [s.get('run', '') for s in steps]
-        self.assertIn('python3 ci/push-niks3.py --outputs attic-transfer/outputs.txt', runs)
-        self.assertLess(runs.index(migration.INSTALL_NIKS3), runs.index('python3 ci/transfer-attic.py import --directory attic-transfer'))
-        self.assertEqual(next(s['timeout-minutes'] for s in steps if s.get('run') == 'python3 ci/push-niks3.py --outputs attic-transfer/outputs.txt'), 180)
+        self.assertIn('python3 ci/push-niks3.py --outputs closure-transfer/outputs.txt', runs)
+        self.assertLess(runs.index(migration.INSTALL_NIKS3), runs.index('python3 ci/transfer-closures.py import --directory closure-transfer'))
+        self.assertEqual(next(s['timeout-minutes'] for s in steps if s.get('run') == 'python3 ci/push-niks3.py --outputs closure-transfer/outputs.txt'), 180)
 
     def test_isolated_publisher_reads_before_bootstrap_and_always_cleans_up(self):
         after, _ = migration.migrate_document(native_workflow())
@@ -159,8 +159,8 @@ class MigrationSemantics(unittest.TestCase):
         runs = [step.get('run', '') for step in steps]
         self.assertLess(runs.index('python3 ci/configure-niks3.py --oidc'), runs.index(migration.INSTALL_NIKS3))
         self.assertLess(runs.index(migration.INSTALL_NIKS3), runs.index('python3 ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt'))
-        self.assertLess(runs.index('python3 ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt'), runs.index('python3 ci/transfer-attic.py import --directory attic-transfer'))
-        self.assertLess(runs.index('python3 ci/push-niks3.py --outputs attic-transfer/outputs.txt'), runs.index('python3 ci/configure-niks3.py --cleanup'))
+        self.assertLess(runs.index('python3 ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt'), runs.index('python3 ci/transfer-closures.py import --directory closure-transfer'))
+        self.assertLess(runs.index('python3 ci/push-niks3.py --outputs closure-transfer/outputs.txt'), runs.index('python3 ci/configure-niks3.py --cleanup'))
         self.assertEqual(steps[-1]['if'], '${{ always() }}')
         self.assertEqual(migration.migrate_document(after)[0], after)
 
@@ -205,7 +205,7 @@ class MigrationSemantics(unittest.TestCase):
         after, _ = migration.migrate_document(native_workflow(cleanup=False))
         steps = after['jobs']['build']['steps']
         cleanup = next(i for i, s in enumerate(steps) if s.get('run') == 'python3 ci/configure-niks3.py --cleanup')
-        export = next(i for i, s in enumerate(steps) if 'ci/transfer-attic.py export' in s.get('run', ''))
+        export = next(i for i, s in enumerate(steps) if 'ci/transfer-closures.py export' in s.get('run', ''))
         self.assertLess(cleanup, export)
         self.assertEqual(steps[cleanup]['if'], '${{ always() }}')
 
@@ -235,9 +235,29 @@ class MigrationSemantics(unittest.TestCase):
         self.assertEqual(job['permissions']['statuses'], 'write')
         self.assertEqual(job['permissions']['id-token'], 'write')
 
+    def test_already_migrated_workflow_loses_its_attic_names_once(self):
+        document = {'jobs': {
+            'test': {'runs-on': 'ubuntu-24.04', 'steps': [
+                {'name': 'Check Attic publication handling without credentials',
+                 'run': 'python3 ci/test-push-attic.py\npython3 ci/test-transfer-attic.py\npython3 ci/test-public-closure.py\npython3 ci/test-configure-attic-read.py\n'}]},
+            'publish': {'if': "${{ (vars.NIKS3_PUSH_ENABLED || vars.ATTIC_PUSH_ENABLED) == 'true' }}", 'runs-on': 'ubuntu-24.04', 'steps': [
+                {'name': 'Import', 'env': {'ATTIC_MAX_CLOSURE_MIB': "${{ vars.ATTIC_MAX_CLOSURE_MIB || '8192' }}", 'OTHER': 'x'},
+                 'run': 'python3 ci/transfer-attic.py import --directory attic-transfer'}]}}}
+        after, _ = migration.migrate_document(document)
+        self.assertNotIn('attic', json.dumps(after).lower())
+        check = after['jobs']['test']['steps'][0]
+        self.assertEqual(check['name'], 'Check cache publication handling without credentials')
+        self.assertEqual(check['run'], 'python3 ci/test-push-niks3.py\npython3 ci/test-transfer-closures.py\npython3 ci/test-public-closure.py\n')
+        self.assertEqual(after['jobs']['publish']['if'], "${{ vars.NIKS3_PUSH_ENABLED == 'true' }}")
+        env = after['jobs']['publish']['steps'][0]['env']
+        self.assertEqual(list(env), ['MAX_CLOSURE_MIB', 'OTHER'])
+        self.assertEqual(env['MAX_CLOSURE_MIB'], "${{ vars.MAX_CLOSURE_MIB || '8192' }}")
+        self.assertEqual(migration.migrate_document(after)[0], after)
+
     def test_old_cache_flag_fallback_does_not_override_explicit_false(self):
         after, _ = migration.migrate_document(native_workflow())
-        self.assertIn("(vars.NIKS3_PUSH_ENABLED || vars.ATTIC_PUSH_ENABLED) == 'true'", after['jobs']['publish']['if'])
+        self.assertIn("vars.NIKS3_PUSH_ENABLED == 'true'", after['jobs']['publish']['if'])
+        self.assertNotIn('ATTIC_PUSH_ENABLED', after['jobs']['publish']['if'])
 
     def test_cache_only_custom_publisher_requires_manual_repair(self):
         document = {'jobs': {'custom': {'steps': [{'name': 'Build and publish', 'env': {'ATTIC_TOKEN': '${{ secrets.ATTIC_TOKEN }}'}, 'run': 'python3 ci/build-cache-only.py'}]}}}

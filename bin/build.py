@@ -21,11 +21,11 @@ from fork_ci import Blocked, validate_policy
 
 def public_cache(env):
     """Use only the operator's public read endpoint and verification key."""
-    endpoint = env.get('ATTIC_SUBSTITUTER', '')
-    key = env.get('ATTIC_PUBLIC_KEY', '')
+    endpoint = env.get('CACHE_SUBSTITUTER', '')
+    key = env.get('CACHE_PUBLIC_KEY', '')
     if not endpoint and not key:
         return ''
-    http2 = env.get('ATTIC_HTTP2', 'true')
+    http2 = env.get('CACHE_HTTP2', 'true')
     if http2 not in ('true', 'false'):
         raise Blocked('Cache HTTP/2 setting must be true or false')
     try:
@@ -88,10 +88,10 @@ def main():
     policy = validate_policy(json.loads((args.source / '.fork-ci.json').read_text()))
     row = next(r for r in policy['matrix'] if r['system'] == args.system)
     env = {k: v for k, v in os.environ.items() if k not in
-           ['GH_TOKEN', 'GITHUB_TOKEN', 'ATTIC_TOKEN', 'FLAKEY_ATTIC_TOKEN', 'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'SSH_AUTH_SOCK',
+           ['GH_TOKEN', 'GITHUB_TOKEN', 'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'SSH_AUTH_SOCK',
             'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL',
             'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE']}
-    if any(os.environ.get(key) for key in ['ATTIC_TOKEN', 'FLAKEY_ATTIC_TOKEN', 'GH_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE']):
+    if any(os.environ.get(key) for key in ['GH_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE']):
         raise Blocked('Build jobs must not receive publication credentials')
     env['NIX_CONFIG'] = env.get('NIX_CONFIG', '') + '\n' + CACHE['nix_config']()
     substituter = public_cache(env)
@@ -99,7 +99,7 @@ def main():
     flags = ['--no-update-lock-file', '--no-write-lock-file',
              '--option', 'accept-flake-config', 'false', '--option', 'builders', '']
     if substituter:
-        flags += ['--option', 'http2', env.get('ATTIC_HTTP2', 'true')]
+        flags += ['--option', 'http2', env.get('CACHE_HTTP2', 'true')]
     packages = ['.#packages.' + args.system + '.' + name for name in row['packages']]
     checks = ['.#checks.' + args.system + '.' + name for name in row.get('checks', [])]
     guard_public(args.source, packages + checks)

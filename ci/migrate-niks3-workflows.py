@@ -24,7 +24,9 @@ CREDENTIAL_KEYS = {
     'ATTIC_BIN', 'ATTIC_ENDPOINT', 'ATTIC_CACHE', 'ATTIC_SERVER',
     'ATTIC_SUBSTITUTER', 'ATTIC_PUBLIC_KEY',
 }
-CACHE_FLAG = '(vars.NIKS3_PUSH_ENABLED || vars.ATTIC_PUSH_ENABLED)'
+CACHE_FLAG = 'vars.NIKS3_PUSH_ENABLED'
+# The transitional gate an earlier migration wrote while both caches published.
+TRANSITIONAL_FLAG = '(vars.NIKS3_PUSH_ENABLED || vars.ATTIC_PUSH_ENABLED)'
 CALLER = 'dweee/dave-fork-ci/.github/workflows/upstream-sync.yml@'
 INSTALL_NIKS3 = 'bash ci/install-niks3.sh --retain-bootstrap'
 BOOTSTRAP_OUTPUTS = ['--outputs', 'niks3-bootstrap-outputs.txt']
@@ -197,7 +199,10 @@ def clean_environment(step):
 
 def cache_flags(value, field=None):
     if isinstance(value, str):
-        if field not in {'if', 'auto-merge', 'cache'} or 'vars.NIKS3_PUSH_ENABLED' in value:
+        if field not in {'if', 'auto-merge', 'cache'}:
+            return value
+        value = value.replace(TRANSITIONAL_FLAG, CACHE_FLAG)
+        if 'vars.NIKS3_PUSH_ENABLED' in value:
             return value
         return re.sub(r'\bvars\.ATTIC_PUSH_ENABLED\b', CACHE_FLAG, value)
     if isinstance(value, dict):
@@ -207,12 +212,48 @@ def cache_flags(value, field=None):
     return value
 
 
+# Attic is retired. Already-migrated workflows still name the shared closure
+# transfer after it; rename those to the controller's current helper and keys.
+RETIRED_TEXT = [('transfer-attic.py', 'transfer-closures.py'), ('attic-transfer', 'closure-transfer'),
+                ('Check Attic publication handling without credentials', 'Check cache publication handling without credentials'),
+                ('Preserve data archives independently of Attic', 'Preserve data archives independently of the cache')]
+RETIRED_ENV = {'ATTIC_MAX_CLOSURE_MIB': 'MAX_CLOSURE_MIB', 'ATTIC_HTTP2': 'CACHE_HTTP2'}
+RETIRED_TESTS = {'python3 ci/test-push-attic.py': 'python3 ci/test-push-niks3.py', 'python3 ci/test-configure-attic-read.py': None}
+
+
+def retired_names(value, key=None):
+    if isinstance(value, str):
+        for old, new in RETIRED_TEXT:
+            value = value.replace(old, new)
+        value = re.sub(r'\bvars\.ATTIC_(\w*MAX_CLOSURE_MIB)\b', r'vars.\1', value)
+        if key == 'run':
+            original = value.split('\n')
+            lines = []
+            for line in original:
+                command_line = line.strip()
+                if command_line not in RETIRED_TESTS:
+                    lines.append(line)
+                elif RETIRED_TESTS[command_line] and not any(l.strip() == RETIRED_TESTS[command_line] for l in original):
+                    lines.append(line.replace(command_line, RETIRED_TESTS[command_line]))
+            # Only a self-test step is rewritten; a step that still runs an
+            # Attic reader or publisher keeps its text for the checks below.
+            if not any('attic' in line.lower() for line in lines):
+                value = '\n'.join(lines)
+        return value
+    if isinstance(value, dict):
+        return {(RETIRED_ENV.get(name, name) if key == 'env' else name): retired_names(item, name)
+                for name, item in value.items()}
+    if isinstance(value, list):
+        return [retired_names(item, key) for item in value]
+    return value
+
+
 def migrate_document(document, controller_revision=None):
     if controller_revision is not None and not re.fullmatch(r'[a-f0-9]{40}', controller_revision):
         raise MigrationError('--controller-revision must be an exact lowercase 40-character commit')
     if not isinstance(document, dict) or not isinstance(document.get('jobs'), dict):
         raise MigrationError('Expected a workflow mapping with jobs')
-    document = copy.deepcopy(document)
+    document = retired_names(copy.deepcopy(document))
     manual = []
     for job_name, job in document['jobs'].items():
         if not isinstance(job, dict):
@@ -369,7 +410,7 @@ def migrate_document(document, controller_revision=None):
             has_reader = True
         installs = {'bash ci/install-niks3.sh', INSTALL_NIKS3}
         if has_publisher and not any(step.get('run', '').strip() in installs for step in rewritten):
-            index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-attic.py import' in step.get('run', '') or command(step.get('run', ''), 'push-niks3.py') is not None), len(rewritten))
+            index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-closures.py import' in step.get('run', '') or command(step.get('run', ''), 'push-niks3.py') is not None), len(rewritten))
             rewritten.insert(index, {'name': 'Install pinned Niks3 publisher before importing build data', 'run': INSTALL_NIKS3})
         if has_publisher:
             install = next(i for i, step in enumerate(rewritten) if step.get('run', '').strip() in installs)
@@ -389,7 +430,7 @@ def migrate_document(document, controller_revision=None):
                 rewritten.insert(install + 1, step)
             elif len(bootstrap) != 1 or bootstrap[0] <= install:
                 raise MigrationError('Bootstrap publication must follow trusted client installation: ' + str(job_name))
-            elif any('ci/transfer-attic.py import' in step.get('run', '') for step in rewritten[:bootstrap[0]]):
+            elif any('ci/transfer-closures.py import' in step.get('run', '') for step in rewritten[:bootstrap[0]]):
                 raise MigrationError('Bootstrap publication must precede build data import: ' + str(job_name))
             if not has_reader:
                 # The isolated publisher also needs substitution for its trusted
@@ -408,7 +449,7 @@ def migrate_document(document, controller_revision=None):
                     raise MigrationError('Active publisher reader must precede client installation: ' + str(job_name))
         if has_reader:
             if not any(command(step.get('run', ''), 'configure-niks3.py') == ['--cleanup'] for step in rewritten):
-                index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-attic.py export' in step.get('run', '')), len(rewritten))
+                index = next((i for i, step in enumerate(rewritten) if 'ci/transfer-closures.py export' in step.get('run', '')), len(rewritten))
                 rewritten.insert(index, {'name': 'Remove job-local Niks3 reader before exporting build data' if native_build is not None else 'Remove job-local Niks3 reader', 'if': '${{ always() }}', 'run': 'python3 ci/configure-niks3.py --cleanup'})
         if has_reader or has_publisher:
             permissions(document, job)
@@ -447,14 +488,14 @@ def retain_artifact_builds(document):
                           and 'check=$(python3 ci/native-target.py check)' in step.get('run', '')))
                   and 'nix build "$target"' in step.get('run', '')
                   and {'TARGET_SYSTEM', 'TARGET_PACKAGE'} <= set(step.get('env', {}))]
-        exports = [step for step in steps if command(step.get('run', ''), 'transfer-attic.py') is not None
-                   and command(step.get('run', ''), 'transfer-attic.py')[:1] == ['export']]
+        exports = [step for step in steps if command(step.get('run', ''), 'transfer-closures.py') is not None
+                   and command(step.get('run', ''), 'transfer-closures.py')[:1] == ['export']]
         if not native or not exports:
             continue
         if len(native) != 1 or len(exports) != 1:
             raise MigrationError('Review multiple native build/export steps: ' + str(name))
         export = exports[0]
-        args = command(export['run'], 'transfer-attic.py')
+        args = command(export['run'], 'transfer-closures.py')
         if (args[:2] != ['export', '--directory'] or len(args) not in {3, 5}
                 or not re.fullmatch(r'[A-Za-z0-9_/-]+', args[2])
                 or (len(args) == 5 and args[3:] != ['--manifest', 'cache-outputs.txt'])):
@@ -491,7 +532,7 @@ def retain_artifact_builds(document):
                 native[0]['run'] = native[0]['run'].replace('nix build "$target"',
                     'python3 ci/retain-build-outputs.py --target "$target" --manifest cache-outputs.txt -- nix build "$target"', 1)
         export.update(id='cache_transfer',
-            run='python3 ci/transfer-attic.py ' + shlex.join(args[:3] + ['--manifest', 'cache-outputs.txt']),
+            run='python3 ci/transfer-closures.py ' + shlex.join(args[:3] + ['--manifest', 'cache-outputs.txt']),
             **{'if': export_gate})
         uploads[0]['if'] = upload_gate
         builds.add(name)

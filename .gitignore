@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 result
 outputs.txt
-attic-transfer/
+closure-transfer/
 
 # Local operator artifacts
 /VALIDATION.json

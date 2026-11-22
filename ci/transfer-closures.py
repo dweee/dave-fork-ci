@@ -42,7 +42,7 @@ def copy_bounded(source, target, limit):
 
 
 def transfer(mode, directory, limit, source_manifest=None):
-    if any(os.environ.get(name) for name in ('ATTIC_TOKEN', 'FLAKEY_ATTIC_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE')):
+    if any(os.environ.get(name) for name in ('NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE')):
         raise ValueError("A transfer job must not receive an upload credential")
     directory.mkdir(parents=True, exist_ok=True)
     manifest = directory / "outputs.txt"
@@ -88,7 +88,7 @@ def transfer(mode, directory, limit, source_manifest=None):
             subprocess.run(["nix-store", "--check-validity", *paths], check=True)
             policy.runtime(paths)
             # The export/import format drops signatures. Restore them only
-            # from the official cache so Attic can skip its existing outputs.
+            # from the official cache so the publisher can skip existing outputs.
             # Builder-supplied metadata never decides which paths to skip.
             subprocess.run(["nix", "store", "copy-sigs", "--substituter",
                             "https://cache.nixos.org", "--recursive", *paths],
@@ -106,7 +106,7 @@ def main():
     parser.add_argument("--manifest", type=Path)
     args = parser.parse_args()
     try:
-        mib = int(os.environ.get("ATTIC_MAX_CLOSURE_MIB") or "2048")
+        mib = int(os.environ.get("MAX_CLOSURE_MIB") or "2048")
         if not 1 <= mib <= 8192:
             raise ValueError("Closure transfer limit must be between 1 and 8192 MiB")
         if args.manifest is not None:
@@ -116,7 +116,7 @@ def main():
         else:
             transfer(args.mode, args.directory, mib * 1024 * 1024)
     except TransferSizeExceeded:
-        print("Nix closure transfer exceeded ATTIC_MAX_CLOSURE_MIB; no cache publication is authorized.", file=sys.stderr)
+        print("Nix closure transfer exceeded MAX_CLOSURE_MIB; no cache publication is authorized.", file=sys.stderr)
         return 1
     except OSError as error:
         if error.errno in (errno.ENOSPC, errno.EDQUOT):

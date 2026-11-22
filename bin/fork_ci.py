@@ -35,7 +35,7 @@ class Blocked(RuntimeError):
 def git(repo, *args, check=True, extra_env=None, input_data=None):
     # No inherited global helpers, filters, tracing, hooks or file transports.
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(('GIT_', 'GH_', 'GITHUB_TOKEN', 'ATTIC_TOKEN'))}
+           if not k.startswith(('GIT_', 'GH_', 'GITHUB_TOKEN'))}
     env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
                GIT_TERMINAL_PROMPT='0')
     env.update(extra_env or {})

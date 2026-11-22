@@ -36,7 +36,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
             outputs = root / 'outputs.txt'
             path = '/nix/store/' + 'a' * 32 + '-package'
             with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
-                 patch.dict(os.environ, {'ATTIC_SUBSTITUTER': endpoint, 'ATTIC_PUBLIC_KEY': key, 'ATTIC_HTTP2': 'false'}, clear=True), \
+                 patch.dict(os.environ, {'CACHE_SUBSTITUTER': endpoint, 'CACHE_PUBLIC_KEY': key, 'CACHE_HTTP2': 'false'}, clear=True), \
                  patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else json.dumps([{'outputs': {'out': path}}]).encode()) as call, \
                  patch.object(build.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 build.main()
@@ -46,14 +46,14 @@ class BuildAndWorkflowTests(unittest.TestCase):
             self.assertIn('extra-substituters = ' + endpoint, env['NIX_CONFIG'])
             self.assertIn('extra-trusted-public-keys = ' + key, env['NIX_CONFIG'])
             self.assertIn('http2 = false', env['NIX_CONFIG'])
-            self.assertNotIn('ATTIC_TOKEN', env)
+            self.assertNotIn('NIKS3_WRITE_TOKEN', env)
 
     def test_cache_transport_setting_rejects_configuration_injection(self):
         key = 'packages:' + base64.b64encode(bytes(range(32))).decode()
         for value in ['false\nrequire-sigs = false', '', '0', 'invalid']:
             with self.subTest(value=value), self.assertRaises(fork_ci.Blocked):
-                build.public_cache({'ATTIC_SUBSTITUTER': 'https://cache.example.org',
-                                    'ATTIC_PUBLIC_KEY': key, 'ATTIC_HTTP2': value})
+                build.public_cache({'CACHE_SUBSTITUTER': 'https://cache.example.org',
+                                    'CACHE_PUBLIC_KEY': key, 'CACHE_HTTP2': value})
 
     def test_invalid_public_cache_settings_cannot_inject_nix_configuration(self):
         endpoint = 'https://cache.example.org/packages'
@@ -66,7 +66,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
                  (endpoint, key + '\nrequire-sigs = false'), (endpoint, 'packages:eA==')]
         for url, public_key in cases:
             with self.subTest(url=url, public_key=public_key), self.assertRaises(fork_ci.Blocked):
-                build.public_cache({'ATTIC_SUBSTITUTER': url, 'ATTIC_PUBLIC_KEY': public_key})
+                build.public_cache({'CACHE_SUBSTITUTER': url, 'CACHE_PUBLIC_KEY': public_key})
 
     def test_build_uses_explicit_system_and_disables_flake_cache_settings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -111,7 +111,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
             root = Path(directory)
             (root / '.fork-ci.json').write_text(json.dumps(POLICY))
             with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(root / 'out')]), \
-                 patch.dict(os.environ, {'ATTIC_TOKEN': 'synthetic-regression-fixture', 'PATH': os.environ['PATH']}, clear=True):
+                 patch.dict(os.environ, {'NIKS3_WRITE_TOKEN': 'synthetic-regression-fixture', 'PATH': os.environ['PATH']}, clear=True):
                 with self.assertRaises(fork_ci.Blocked):
                     build.main()
 
@@ -172,10 +172,9 @@ class BuildAndWorkflowTests(unittest.TestCase):
         self.assertNotIn('GH_TOKEN:', build_job)
         cache_job = source.split('\n  cache:', 1)[1].split('\n  promote:', 1)[0]
         self.assertLess(cache_job.index('Install pinned Niks3'), cache_job.index('Import data'))
-        self.assertNotIn('secrets.ATTIC_TOKEN', cache_job)
-        self.assertNotIn('push-attic.py', cache_job)
+        self.assertNotIn('secrets.', cache_job)
         self.assertIn('push-niks3.py', cache_job)
-        self.assertIn('--outputs attic-transfer/outputs.txt', cache_job)
+        self.assertIn('--outputs closure-transfer/outputs.txt', cache_job)
         promote = source.split('\n  promote:', 1)[1]
         self.assertIn("needs.build.result == 'success'", promote)
         self.assertIn("needs.cache.result == 'success'", promote)

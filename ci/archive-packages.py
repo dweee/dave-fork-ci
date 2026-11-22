@@ -45,7 +45,7 @@ def create_release(repository, branch, run, tag, artifacts):
        '--notes', 'Nix runtime-closure archives from ' + run['html_url'] + '. Built source revisions: ' + ', '.join(revisions)
        + '. Workflow trigger revision: ' + run['head_sha']
        + '. The backup tag marks the default branch at archive publication, not the built source revision. '
-       'Successful package outputs are retained even if another build or Attic upload fails. Each ZIP contains '
+       'Successful package outputs are retained even if another build or cache upload fails. Each ZIP contains '
        'a gzip Nix export, output roots and checksums. These are data archives, not installers.')
 
 

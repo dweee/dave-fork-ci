@@ -161,11 +161,11 @@ class Gates(unittest.TestCase):
             with self.assertRaises(ValueError): c.promote('tested', 'a'*40, {})
 
     def test_build_environment_has_no_writer_credentials(self):
-        with patch.dict(c.os.environ, {'ATTIC_TOKEN': 'fixture', 'CHANNEL_TOKEN': 'fixture'}):
+        with patch.dict(c.os.environ, {'SOURCE_TOKEN': 'fixture', 'CHANNEL_TOKEN': 'fixture'}):
             with c.build_environment({'PATH': '/bin'}):
-                self.assertNotIn('ATTIC_TOKEN', c.os.environ)
+                self.assertNotIn('SOURCE_TOKEN', c.os.environ)
                 self.assertNotIn('CHANNEL_TOKEN', c.os.environ)
-            self.assertEqual(c.os.environ['ATTIC_TOKEN'], 'fixture')
+            self.assertEqual(c.os.environ['SOURCE_TOKEN'], 'fixture')
 
     def test_unreviewed_forge_is_rejected(self):
         rules = {'targets': {'aarch64-linux': []}, 'repository': 'd/example', 'remote': 'https://other.invalid/a.git'}
@@ -211,90 +211,22 @@ class Gates(unittest.TestCase):
             run.assert_not_called()
 
 
-class ReaderLifecycle(unittest.TestCase):
-    def test_cli_cleanup_needs_no_token_and_preserves_existing_nix_config(self):
-        helper = Path(__file__).with_name('configure-attic-read.py')
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)/'home'
-            temporary = Path(directory)/'job'
-            temporary.mkdir()
-            config = home/'.config/nix/nix.conf'
-            config.parent.mkdir(parents=True)
-            config.write_text('sandbox = false\n')
-            env = dict(os.environ, HOME=str(home), RUNNER_TEMP=str(temporary), ATTIC_TOKEN='fixture-token')
-            subprocess.run([sys.executable, str(helper)], env=env, capture_output=True, check=True)
-            credential = temporary/'flakey-attic.netrc'
-            self.assertTrue(credential.exists())
-            self.assertEqual(credential.stat().st_mode & 0o777, 0o600)
-            env.pop('ATTIC_TOKEN')
-            for _ in range(2):
-                subprocess.run([sys.executable, str(helper), '--cleanup'], env=env, capture_output=True, check=True)
-            self.assertFalse(credential.exists())
-            self.assertEqual(config.read_text().strip(), 'sandbox = false')
-
-
-PUBLIC = 'https://attic.monke.fail'
-INTERNAL = 'http://172.29.0.1:8080'
-TAILNET = 'http://icicle.eel-ling.ts.net:8080'
-HELPER = Path(__file__).with_name('configure-attic-read.py')
-configure_spec = importlib.util.spec_from_file_location('configure_attic_read', HELPER)
-reader = importlib.util.module_from_spec(configure_spec)
-configure_spec.loader.exec_module(reader)
-REJECTED = ['http://attic.monke.fail', 'https://attic.example', 'http://172.29.0.1', 'http://172.29.0.1:8081',
-            'https://172.29.0.1:8080', 'http://127.0.0.1:8080', 'http://172.29.0.1:8080/other',
-            'http://172.29.0.1:8080@attic.monke.fail', 'attic.monke.fail',
-            'https://icicle.eel-ling.ts.net:8080', 'http://icicle.eel-ling.ts.net', 'http://icicle.eel-ling.ts.net:8081',
-            'http://icicle.eel-ling.ts.net:8080/other', 'http://other.eel-ling.ts.net:8080', 'http://100.126.145.24:8080',
-            'http://icicle.eel-ling.ts.net.evil.example:8080']
-
-
-class AtticServer(unittest.TestCase):
-    def load(self, **env):
-        scrubbed = {k: v for k, v in os.environ.items() if k != 'ATTIC_SERVER'}
-        with patch.dict(os.environ, dict(scrubbed, **env), clear=True), patch.object(Path, 'read_text', return_value='{"forge":"github"}'):
+class CacheIdentity(unittest.TestCase):
+    def load(self, forge):
+        with patch.object(Path, 'read_text', return_value='{"forge":"%s"}' % forge):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         return module
 
     def test_forgejo_uses_niks3_and_its_own_key(self):
-        with patch.object(Path, 'read_text', return_value='{"forge":"forgejo"}'):
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+        module = self.load('forgejo')
         self.assertEqual(module.CACHE, 'https://niks3.monke.fail')
         self.assertEqual(module.KEY, 'niks3.monke.fail-1:q13GqiZgAxx7SyoLZInXoJjviZMOdNpfG03xs0VUD2M=')
 
-    def test_public_cache_is_the_default(self):
-        for env in [{}, {'ATTIC_SERVER': ''}, {'ATTIC_SERVER': ' '}, {'ATTIC_SERVER': PUBLIC}, {'ATTIC_SERVER': PUBLIC + '/'}]:
-            with self.subTest(env=env):
-                module = self.load(**env)
-                self.assertEqual(module.CACHE, 'https://niks3.monke.fail/oidc')
-                self.assertEqual(module.PUBLIC_CACHE, 'https://niks3.monke.fail')
-
-    def test_internal_and_tailnet_servers_select_their_cache(self):
-        for server in [INTERNAL, TAILNET]:
-            for value in [server, server + '/']:
-                with self.subTest(value=value):
-                    module = self.load(ATTIC_SERVER=value)
-                    self.assertEqual(module.CACHE, 'https://niks3.monke.fail/oidc')
-                    self.assertEqual(module.PUBLIC_CACHE, 'https://niks3.monke.fail')
-
-    def test_only_reviewed_origins_are_accepted(self):
-        for value in REJECTED:
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError): c.attic_server({'ATTIC_SERVER': value})
-                self.assertEqual(self.load(ATTIC_SERVER=value).CACHE, 'https://niks3.monke.fail/oidc')
-
-    def test_reader_helper_agrees_with_the_release_tool(self):
-        for value in [None, '', PUBLIC, PUBLIC + '/', INTERNAL, INTERNAL + '/', TAILNET, TAILNET + '/'] + REJECTED:
-            with self.subTest(value=value):
-                env = {} if value is None else {'ATTIC_SERVER': value}
-                with patch.dict(os.environ, {k: v for k, v in os.environ.items() if k != 'ATTIC_SERVER'}, clear=True):
-                    os.environ.update(env)
-                    try: expected = c.attic_server()
-                    except ValueError: expected = ValueError
-                    try: actual = reader.attic_server()
-                    except ValueError: actual = ValueError
-                self.assertEqual(actual, expected)
+    def test_github_reads_through_the_oidc_route(self):
+        module = self.load('github')
+        self.assertEqual(module.CACHE, 'https://niks3.monke.fail/oidc')
+        self.assertEqual(module.PUBLIC_CACHE, 'https://niks3.monke.fail')
 
     def audit_proof(self, cache):
         rules = {'targets': {'aarch64-linux': []}}
@@ -317,91 +249,17 @@ class AtticServer(unittest.TestCase):
             other = self.audit_proof(server)
             self.assertEqual(public[:2], other[:2])
             self.assertEqual(public[2], other[2])
-            self.assertNotIn('attic', json.dumps(other[2]))
-            self.assertNotIn('172.29', json.dumps(other[2]))
-            self.assertNotIn('ts.net', json.dumps(other[2]))
+            self.assertNotIn('/oidc', json.dumps(other[2]))
 
     def test_diagnostics_never_carry_the_transport(self):
         cached = dict(ENTRY, narSize=99)
-        for cache in [PUBLIC + '/flakey', INTERNAL + '/flakey', TAILNET + '/flakey']:
+        for cache in ['https://niks3.monke.fail', 'https://niks3.monke.fail/oidc']:
             output = io.StringIO()
             with patch.object(c, 'CACHE', cache), patch.object(c, 'info', return_value={A: cached}), \
                     patch.object(c, 'run', return_value=''), contextlib.redirect_stdout(output):
                 c.verify([A], {A: ENTRY}, {})
-            self.assertNotIn('172.29', output.getvalue())
-            self.assertNotIn('ts.net', output.getvalue())
             self.assertNotIn('monke.fail', output.getvalue())
             self.assertEqual(json.loads(output.getvalue().splitlines()[0].split(': ', 1)[1])['origin'], 'niks3')
-
-
-class ReaderEndpoint(unittest.TestCase):
-    def configure(self, **extra):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)/'home'
-            temporary = Path(directory)/'job'
-            temporary.mkdir()
-            config = home/'.config/nix/nix.conf'
-            config.parent.mkdir(parents=True)
-            config.write_text('sandbox = false\n')
-            env = {k: v for k, v in os.environ.items() if k != 'ATTIC_SERVER'}
-            env.update(HOME=str(home), RUNNER_TEMP=str(temporary), ATTIC_TOKEN='fixture-token', **extra)
-            result = subprocess.run([sys.executable, str(HELPER)], env=env, capture_output=True, text=True)
-            netrc = temporary/'flakey-attic.netrc'
-            return (result, netrc.read_text() if netrc.exists() else None, config.read_text(),
-                    oct(netrc.stat().st_mode & 0o777) if netrc.exists() else None)
-
-    def test_public_server_is_unchanged(self):
-        result, netrc, config, mode = self.configure()
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(netrc, 'machine attic.monke.fail login ci password fixture-token\n')
-        self.assertEqual(mode, '0o600')
-        self.assertIn('extra-substituters = https://attic.monke.fail/flakey\n', config)
-        self.assertIn('extra-trusted-public-keys = flakey:mDx4DiNpH5w1Pl8OAKFFWq1ZsypA9lbaFKNiRWhqYE8=\n', config)
-        self.assertNotIn('172.29', config)
-
-    def test_internal_server_scopes_the_credential_to_that_host_only(self):
-        result, netrc, config, mode = self.configure(ATTIC_SERVER=INTERNAL)
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(netrc, 'machine 172.29.0.1 login ci password fixture-token\n')
-        self.assertEqual(mode, '0o600')
-        self.assertIn('extra-substituters = http://172.29.0.1:8080/flakey\n', config)
-        # Same keys: the internal endpoint serves the same signed cache.
-        self.assertIn('extra-trusted-public-keys = flakey:mDx4DiNpH5w1Pl8OAKFFWq1ZsypA9lbaFKNiRWhqYE8=\n', config)
-        self.assertNotIn('attic.monke.fail', netrc + config)
-        self.assertNotIn('ts.net', netrc + config)
-        self.assertNotIn('fixture-token', config + result.stdout + result.stderr)
-
-    def test_tailnet_server_scopes_the_credential_to_its_host_only(self):
-        result, netrc, config, mode = self.configure(ATTIC_SERVER=TAILNET)
-        self.assertEqual(result.returncode, 0)
-        # Host only, as netrc matches: no port, scheme or other origin.
-        self.assertEqual(netrc, 'machine icicle.eel-ling.ts.net login ci password fixture-token\n')
-        self.assertEqual(mode, '0o600')
-        self.assertIn('extra-substituters = http://icicle.eel-ling.ts.net:8080/flakey\n', config)
-        self.assertIn('extra-trusted-public-keys = flakey:mDx4DiNpH5w1Pl8OAKFFWq1ZsypA9lbaFKNiRWhqYE8=\n', config)
-        self.assertNotIn('attic.monke.fail', netrc + config)
-        self.assertNotIn('172.29', netrc + config)
-        self.assertNotIn('fixture-token', config + result.stdout + result.stderr)
-
-    def test_unreviewed_server_writes_no_credential_and_no_config(self):
-        for value in REJECTED:
-            with self.subTest(value=value):
-                result, netrc, config, _ = self.configure(ATTIC_SERVER=value)
-                self.assertEqual(result.returncode, 1)
-                self.assertIsNone(netrc)
-                self.assertEqual(config, 'sandbox = false\n')
-                self.assertNotIn('fixture-token', result.stdout + result.stderr)
-
-    def test_cleanup_still_removes_the_internal_configuration(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)/'home'
-            temporary = Path(directory)/'job'
-            temporary.mkdir()
-            env = dict(os.environ, HOME=str(home), RUNNER_TEMP=str(temporary), ATTIC_TOKEN='fixture-token', ATTIC_SERVER=INTERNAL)
-            subprocess.run([sys.executable, str(HELPER)], env=env, capture_output=True, check=True)
-            subprocess.run([sys.executable, str(HELPER), '--cleanup'], env=env, capture_output=True, check=True)
-            self.assertFalse((temporary/'flakey-attic.netrc').exists())
-            self.assertNotIn('172.29', (home/'.config/nix/nix.conf').read_text())
 
 
 @unittest.skipUnless(shutil.which('nix'), 'Nix required for signed cache fixture')
