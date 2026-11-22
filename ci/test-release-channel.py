@@ -1052,6 +1052,7 @@ class BuildDependencies(unittest.TestCase):
                                               'private', build_env, publisher_env, outputs, 'build-required-output')
             self.assertIs(raised.exception, original)
             self.assertEqual(commands.call_count, 4)
+            self.assertEqual(c.ACTIVE_PHASE, 'build-required-output')
 
     def test_publication_failure_blocks_a_successful_build(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(c, 'derivation_output_paths', return_value={A, B}), \
