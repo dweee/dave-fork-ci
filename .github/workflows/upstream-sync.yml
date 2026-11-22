@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       auto-merge:
-        description: Promote a fully tested and cached candidate to the fork default branch
+        description: Merge a pull request for the fully tested upstream candidate
         default: false
         type: boolean
       cache:
@@ -305,6 +305,7 @@ jobs:
        (!inputs.cache && needs.cache.result == 'skipped'))
     permissions:
       contents: write
+      pull-requests: write
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
