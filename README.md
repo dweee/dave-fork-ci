@@ -71,8 +71,7 @@ runs candidate package programs in the publisher job.
 
 The `cache-http2` input still controls Nix transport behavior and defaults to true.
 Set it to false when a cache proxy cannot reliably serve HTTP/2; certificate and
-Nix signature checks remain enabled. Historical `attic-*` inputs and helper
-filenames remain compatibility interfaces, not active Attic publication settings.
+Nix signature checks remain enabled.
 
 ## Failures and review
 
@@ -84,8 +83,8 @@ Do not run this on persistent self-hosted workers: build/dependency code can mod
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-PYTHONDONTWRITEBYTECODE=1 python3 ci/test-push-attic.py
-PYTHONDONTWRITEBYTECODE=1 python3 ci/test-transfer-attic.py
+PYTHONDONTWRITEBYTECODE=1 python3 ci/test-push-niks3.py
+PYTHONDONTWRITEBYTECODE=1 python3 ci/test-transfer-closures.py
 PYTHONDONTWRITEBYTECODE=1 python3 ci/test-public-closure.py
 actionlint -shellcheck= -pyflakes= .github/workflows/upstream-sync.yml
 ```

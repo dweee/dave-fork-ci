@@ -34,18 +34,13 @@ source branch that only touch the paths listed under `paths-ignore` in
 commit until the next qualifying push, the nightly run or an owner dispatch
 publishes the current head. Confirm that no ignored path feeds a package.
 '''
-# The Attic host (icicle) is reachable at the runner-network address only from
-# jobs on the icicle-hosted `nix` runner. Every other runner keeps the public URL.
-INTERNAL_ATTIC = 'http://172.29.0.1:8080'
-# braco can reach the same listener over the tailnet, but its runner unit denies
-# the tailnet range. Once that allows icicle, adding 'braco': TAILNET_ATTIC below
-# is the whole installer change; the helpers already accept this origin.
-TAILNET_ATTIC = 'http://icicle.eel-ling.ts.net:8080'
-CACHE_SERVERS = {'nix': INTERNAL_ATTIC}
 HELPERS = ['caches.json', 'cache-config.py', 'release-channel.py', 'test-release-channel.py', 'update-inputs.py',
-           'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-attic-read.py',
-           'configure-niks3.py', 'push-niks3.py', 'test-push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh',
-           'retain-build-outputs.py', 'test-retain-build-outputs.py', 'transfer-attic.py', 'test-transfer-attic.py']
+           'update-monitor.py', 'test-update-automation.py', 'automation-forge.py', 'configure-niks3.py', 'push-niks3.py', 'test-push-niks3.py', 'niks3-oidc-token.py', 'install-niks3.sh',
+           'retain-build-outputs.py', 'test-retain-build-outputs.py', 'transfer-closures.py', 'test-transfer-closures.py']
+# Attic-era helpers an older installer copied into consumers. Attic is retired;
+# the installer removes these so a regenerated repository keeps no stale copy.
+RETIRED_HELPERS = ['configure-attic-read.py', 'test-configure-attic-read.py', 'push-attic.py', 'test-push-attic.py',
+                   'transfer-attic.py', 'test-transfer-attic.py']
 
 
 # Bounded Nix downloads: fail fast on a dead connection and retry transient DNS,
@@ -175,9 +170,10 @@ def install(args):
     for name in HELPERS:
         if ci / name != HERE / name:
             shutil.copy2(HERE / name, ci / name)
-    for name in ['push-attic.py', 'public-closure.py']:
-        if not (ci / name).exists():
-            shutil.copy2(HERE / name, ci / name)
+    if not (ci / 'public-closure.py').exists():
+        shutil.copy2(HERE / 'public-closure.py', ci / 'public-closure.py')
+    for name in RETIRED_HELPERS:
+        (ci / name).unlink(missing_ok=True)
     # Bytecode must never be tracked: running the helpers rewrites it.
     shutil.rmtree(ci / '__pycache__', ignore_errors=True)
     ignore = root / '.gitignore'
@@ -293,36 +289,23 @@ def install(args):
             # macOS runners have 7 GB for 3 cores, so they stay at one core.
             native['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(
                 cores=0 if system in {'x86_64-linux', 'aarch64-linux'} else 1, runner=native['runs-on'])+[
+                # GitHub reads and publishes through OIDC; Forgejo uses the
+                # repository-scoped Niks3 netrc and write token.
                 {'name': 'Configure job-local private cache reader',
-                 'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
-                 'run': python('ci/configure-attic-read.py')},
+                 **({} if github else {'env': {'NIKS3_READ_NETRC': expr('secrets.FLAKEY_NIKS3_READ_NETRC'),
+                                               'NIKS3_WRITE_TOKEN': expr('secrets.FLAKEY_NIKS3_WRITE_TOKEN')}}),
+                 'run': python('ci/configure-niks3.py' + (' --oidc' if github else ''))},
                 {'name': 'Build complete inventory, checkpoint closures, verify signed cache metadata, pin release', 'id': 'release',
-                 'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
+                 # GitHub: one live progress check run. Forgejo: read-only
+                 # ledger access for the retention pins.
+                 'env': {'STATUS_TOKEN' if github else 'SOURCE_TOKEN': expr('github.token')},
                  'run': python('ci/release-channel.py build --system '+system)},
                 {'name': 'Remove cache reader', 'if': expr('always()'),
-                 'run': python('ci/configure-attic-read.py --cleanup', readonly=True)}]
+                 'run': python('ci/configure-niks3.py --cleanup', readonly=True)}]
             if github:
                 # checks: write lets the gate keep one live progress check run;
                 # GitHub serves job logs only after a job ends.
                 native['permissions'] = {'contents': 'read', 'id-token': 'write', 'checks': 'write'}
-                for step in native['steps']:
-                    if 'configure-attic-read.py' in step.get('run', ''):
-                        step['run'] = step['run'].replace('configure-attic-read.py', 'configure-niks3.py')
-                        if '--cleanup' not in step['run']:
-                            step['run'] += ' --oidc'
-                        step.pop('env', None)
-                    elif 'release-channel.py build' in step.get('run', ''):
-                        step['env'] = {'STATUS_TOKEN': expr('github.token')}
-            else:
-                for step in native['steps']:
-                    if 'configure-attic-read.py' in step.get('run', ''):
-                        step['run'] = step['run'].replace('configure-attic-read.py','configure-niks3.py')
-                        if 'env' in step:
-                            step['env'] = {'NIKS3_READ_NETRC': expr('secrets.FLAKEY_NIKS3_READ_NETRC'),
-                                           'NIKS3_WRITE_TOKEN': expr('secrets.FLAKEY_NIKS3_WRITE_TOKEN')}
-                    elif 'release-channel.py build' in step.get('run', ''):
-                        # Read-only ledger access for the retention pins.
-                        step['env'] = {'SOURCE_TOKEN': expr('github.token')}
             native['steps'][-2:-2] = [
                 {'name': 'Install pinned Niks3 publisher and retain its build dependencies',
                  'run': shell('bash ci/install-niks3.sh --retain-bootstrap')},
@@ -345,27 +328,15 @@ def install(args):
             retention['if'] = expr("(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && " + trusted_ref)
             retention['steps'] = checkout()+bootstrap(runner=retention['runs-on'])+[
                 {'name': 'Configure job-local private reader',
-                 'env': {'ATTIC_TOKEN': expr('secrets.ATTIC_TOKEN || secrets.FLAKEY_ATTIC_TOKEN')},
-                 'run': python('ci/configure-attic-read.py')},
+                 **({} if github else {'env': {'NIKS3_READ_NETRC': expr('secrets.FLAKEY_NIKS3_READ_NETRC')}}),
+                 'run': python('ci/configure-niks3.py' + (' --oidc' if github else ''))},
                 {'name': 'Verify advertised/recent releases independently of current builds',
                  'env': {'SOURCE_TOKEN': expr('github.token')},
                  'run': python('ci/release-channel.py retain --system '+system)},
                 {'name': 'Remove private reader', 'if': expr('always()'),
-                 'run': python('ci/configure-attic-read.py --cleanup', readonly=True)}]
+                 'run': python('ci/configure-niks3.py --cleanup', readonly=True)}]
             if github:
                 retention['permissions'] = {'contents': 'read', 'id-token': 'write'}
-                for step in retention['steps']:
-                    if 'configure-attic-read.py' in step.get('run', ''):
-                        step['run'] = step['run'].replace('configure-attic-read.py', 'configure-niks3.py')
-                        if '--cleanup' not in step['run']:
-                            step['run'] += ' --oidc'
-                        step.pop('env', None)
-            if not github:
-                for step in retention['steps']:
-                    if 'configure-attic-read.py' in step.get('run', ''):
-                        step['run'] = step['run'].replace('configure-attic-read.py','configure-niks3.py')
-                        if 'env' in step:
-                            step['env'] = {'NIKS3_READ_NETRC': expr('secrets.FLAKEY_NIKS3_READ_NETRC')}
             jobs['retain_'+system.replace('-', '_')] = retention
             needed.append(key)
             proofs[system] = expr('needs.'+key+'.outputs.proof')
@@ -436,13 +407,6 @@ def install(args):
           'permissions': {'contents': 'write', 'issues': 'write', 'pull-requests': 'write', **({'actions': 'write'} if github else {})},
           'concurrency': {'group': 'scheduled-input-updates', 'cancel-in-progress': False}, 'jobs': jobs})
     if github:
-        # Publisher binaries are used across steps and must survive runner GC.
-        # Only touch their nix-build command, preserving native workflow layout.
-        for path in workflow_dir.glob('*.y*ml'):
-            text = path.read_text()
-            text = re.sub(r'(client=\$\(nix build[^\n]*?)--no-link',
-                          r'\1--out-link "${RUNNER_TEMP:-/tmp}/attic-client"', text)
-            path.write_text(text)
         install_unacquired_retry(root, workflow_dir, write)
     if not github and not source_only:
         print('Next: grant the restricted updater account write access to ' + args.repository +
@@ -513,8 +477,7 @@ Required repository configuration:
   tags, PRs and monitoring issues. Protect `tested`/`stable` against human or
   unrelated automation writes; allow only the release workflow identity.
 - Forgejo requires repository-scoped `FLAKEY_NIKS3_READ_NETRC` and
-  `FLAKEY_NIKS3_WRITE_TOKEN`. Niks3 is its substitute and verified release cache;
-  existing Attic secrets and historical objects remain.
+  `FLAKEY_NIKS3_WRITE_TOKEN`. Niks3 is its substitute and verified release cache.
 - GitHub requires no Niks3 static secrets: trusted publishers request a write grant through
   OIDC with audience `https://niks3.monke.fail`. Trusted readers use the separate
   read-only audience `https://niks3.monke.fail/read` and `/oidc` cache object route,
@@ -552,14 +515,9 @@ Required repository configuration:
 - Forgejo requires the existing native `nix` and native aarch64 Linux runners. Flakey
   and private inputs never go to GitHub. Already-public GitHub owning repos may
   use their existing native hosted Darwin builders independently.
-- Forgejo jobs on the `nix` runner (x86_64 Linux build and the x86_64 Linux and
-  Darwin retention jobs) set `ATTIC_SERVER` to the Attic host's runner-network
-  address, so cache reads skip the public reverse proxy. The helpers accept only
-  that address, the tailnet address of the same listener, or the public URL, send
-  the token to one host only, and keep proofs independent of the transport. The
-  braco aarch64 build and retention jobs, Darwin builds and all uploads use the
-  public HTTPS URL. The aarch64 Linux retention job runs on braco, which executes
-  one job at a time: it queues behind other repositories' aarch64 jobs.
+- Every job reads and publishes through the public HTTPS Niks3 URL. The aarch64
+  Linux retention job runs on braco, which executes one job at a time: it queues
+  behind other repositories' aarch64 jobs.
 - Schedules keep their cadence (release channels nightly, input updates every six
   hours) but start at a per-repository offset derived from a SHA-256 of
   `owner/name`: release channels at a minute of the UTC day (00:00-23:59), input updates at a

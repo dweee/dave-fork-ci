@@ -91,7 +91,7 @@ def client_command(directory):
 
 
 def child_environment():
-    return {k:v for k,v in os.environ.items() if k not in {'NIKS3_WRITE_TOKEN','NIKS3_READ_NETRC','ATTIC_TOKEN','FLAKEY_ATTIC_TOKEN',
+    return {k:v for k,v in os.environ.items() if k not in {'NIKS3_WRITE_TOKEN','NIKS3_READ_NETRC',
                                                     'SOURCE_TOKEN','CHANNEL_TOKEN','GH_TOKEN','GITHUB_TOKEN','STATUS_TOKEN'}}
 
 

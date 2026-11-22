@@ -28,33 +28,13 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 # dirtied the checkout that the clean-checkout checks require.
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-PUBLIC_ATTIC = 'https://attic.monke.fail'
-# The Attic host's address on the Forgejo runner network, reachable only from
-# jobs on the icicle-hosted `nix` runner. It serves the same cache and keys.
-INTERNAL_ATTIC = 'http://172.29.0.1:8080'
-# The same listener over the tailnet, for the host-mode braco runner.
-TAILNET_ATTIC = 'http://icicle.eel-ling.ts.net:8080'
-REVIEWED_ATTIC = {PUBLIC_ATTIC, INTERNAL_ATTIC, TAILNET_ATTIC}
 PUBLIC_CACHE = 'https://niks3.monke.fail'
-
-
-def attic_server(environ=None):
-    """Origin used to read the cache; the public one unless the job opts in.
-
-    Only the three reviewed origins are accepted, so a credential can reach plain
-    HTTP only at the private runner-network or tailnet address of the Attic host. Proofs and records never
-    store the transport; PUBLIC_CACHE is the one canonical cache identity.
-    """
-    value = (os.environ if environ is None else environ).get('ATTIC_SERVER', '').strip().rstrip('/')
-    if value and value not in REVIEWED_ATTIC:
-        raise ValueError('ATTIC_SERVER is not a reviewed Attic origin')
-    return value or PUBLIC_ATTIC
-
-
 CACHE = 'https://niks3.monke.fail' + ('/oidc' if json.loads((ROOT/'ci/channels.json').read_text()).get('forge') == 'github' else '')
 KEY = 'niks3.monke.fail-1:q13GqiZgAxx7SyoLZInXoJjviZMOdNpfG03xs0VUD2M='
 UPSTREAM = 'https://cache.nixos.org'
 UPSTREAM_KEY = 'cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY='
+# Signer of the historical NARs in retained archives (ci/retained-archives.md);
+# trusted only when verifying those exact archived paths.
 LEGACY_KEY = 'flakey:mDx4DiNpH5w1Pl8OAKFFWq1ZsypA9lbaFKNiRWhqYE8='
 STORE = re.compile(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/\s]+')
 SHA = re.compile(r'[a-f0-9]{40}')
@@ -368,7 +348,7 @@ def remote_env(env, directory):
                 'trusted-public-keys = ' + KEY + ' ' + UPSTREAM_KEY + '\nextra-trusted-public-keys =\n'
                 'require-sigs = true\nfallback = false\nnarinfo-cache-negative-ttl = 0\n'
                 'narinfo-cache-positive-ttl = 86400\ndownload-attempts = 5\n'
-                'http2 = ' + ('true' if os.environ.get('ATTIC_HTTP2') == 'true' else 'false') + '\n')
+                'http2 = ' + ('true' if os.environ.get('CACHE_HTTP2') == 'true' else 'false') + '\n')
 
 
 def verify(roots, expected, env, archived_cache=None, archived_paths=()):
@@ -380,7 +360,7 @@ def verify(roots, expected, env, archived_cache=None, archived_paths=()):
     if any(ref not in expected for e in expected.values() for ref in e['references']):
         raise ValueError('Incomplete closure')
     # Roots must come from our publisher. Dependencies can use the reviewed
-    # upstream cache when Attic's upstream-signature filter omits them.
+    # upstream cache when the publisher skipped them as already upstream.
     origins = {}
     adopted = []
     with tempfile.TemporaryDirectory(prefix='channel-read-') as directory:
@@ -406,7 +386,7 @@ def verify(roots, expected, env, archived_cache=None, archived_paths=()):
                 actual = metadata(remote[path])
                 if actual != entry:
                     # Another publisher already holds a different build of this
-                    # input-addressed path, and Attic keeps that first copy. A
+                    # input-addressed path, and the cache keeps that first copy. A
                     # non-reproducible rebuild cannot replace it. Adopt the
                     # signed cached copy only when its references match, then
                     # read and verify its bytes like any other member. Both
@@ -846,7 +826,7 @@ def retain(system):
     rules = policy()
     phase('read-release-ledgers')
     records = release_refs(rules)
-    env = {k:v for k,v in os.environ.items() if k not in {'ATTIC_TOKEN','CHANNEL_TOKEN','SOURCE_TOKEN','GITHUB_TOKEN','GH_TOKEN'}}
+    env = {k:v for k,v in os.environ.items() if k not in {'CHANNEL_TOKEN','SOURCE_TOKEN','GITHUB_TOKEN','GH_TOKEN'}}
     for sha, record in records.items():
         # Read-only source credential is confined to Git fetch. Historical
         # helper programs are never executed; Nix only evaluates their flake.
@@ -1248,7 +1228,7 @@ def build(system):
     progress('starting', force=True)
     # Writer/forge tokens never enter Nix evaluation or package build processes.
     env = {k: v for k, v in os.environ.items()
-           if k not in {'ATTIC_TOKEN', 'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'STATUS_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'}}
+           if k not in {'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'STATUS_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'}}
     phase('check-native-platform')
     native_platform_ready(rules, system, env)
     targets = rules['targets'][system]
