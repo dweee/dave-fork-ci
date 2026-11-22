@@ -1223,6 +1223,10 @@ def build_with_dependencies(attr, rules, system, visibility, env, publish_env, o
             outputs.write_text('\n'.join(paths) + '\n')
             phase('upload-completed-build-dependencies')
             run(sys.executable, str(ROOT / 'ci/push-niks3.py'), '--outputs', str(outputs), env=publish_env)
+            if not successful_outputs:
+                # The upload succeeded; report the propagating build failure
+                # under its own phase, not as an upload failure.
+                phase(label)
 
 
 def build(system):
