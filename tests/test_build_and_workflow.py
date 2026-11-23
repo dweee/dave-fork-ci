@@ -222,6 +222,23 @@ class BuildAndWorkflowTests(unittest.TestCase):
         self.assertTrue(line('    "decompiler/Makefile": "' + 'ab' * 32 + '",'))
         self.assertFalse(line('    "token": "sntrys_' + 'ab' * 32 + '",'))
 
+    def test_scanner_unit_test_fixture_exception_is_scoped_to_unit_test_files(self):
+        import re
+        import textwrap
+        import tomllib
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
+        config = source.split("<< 'EOF'\n", 1)[1].split('          EOF', 1)[0]
+        allowlist = tomllib.loads(textwrap.dedent(config))['allowlists'][4]
+        self.assertEqual(allowlist['condition'], 'AND')
+        self.assertEqual(allowlist['targetRules'], ['generic-api-key', 'private-key'])
+        self.assertNotIn('regexes', allowlist)
+        path = lambda name: any(re.search(pattern, name) for pattern in allowlist['paths'])
+        self.assertTrue(path('tests/src/unit/test_redaction.py'))
+        self.assertTrue(path('tests/src/unit/test_report_issue_logs.py'))
+        self.assertFalse(path('tests/src/unit/fixtures/secrets.py'))
+        self.assertFalse(path('src/ha_mcp/test_redaction.py'))
+        self.assertFalse(path('tests/src/unit/test_redaction.py.bak'))
+
     def test_closure_export_runs_only_for_the_cache_job(self):
         source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
         build_job = source.split('\n  build:', 1)[1].split('\n  cache:', 1)[0]

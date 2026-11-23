@@ -158,6 +158,12 @@ jobs:
           paths = ['''^docs/features/goformals/[^/]+\.diff$''']
           regexTarget = "secret"
           regexes = ['''^_kuna_ident_[0-9a-f]+$''']
+
+          [[allowlists]]
+          description = "ha-mcp unit tests carry synthetic keys and PEM markers for its redaction checks"
+          targetRules = ["generic-api-key", "private-key"]
+          condition = "AND"
+          paths = ['''^tests/src/unit/test_[a-z0-9_]+\.py$''']
           EOF
           mkdir -p "$RUNNER_TEMP/empty-ignore"
           "$scanner/bin/gitleaks" git candidate --config "$RUNNER_TEMP/scanner.toml" \
