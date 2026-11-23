@@ -4,12 +4,16 @@ import argparse
 import base64
 import binascii
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
 import sys
 from urllib.parse import urlsplit
 import re
+import runpy
+
+CACHE = runpy.run_path(str(Path(__file__).resolve().parents[1] / "ci/cache-config.py"))
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fork_ci import Blocked, validate_policy
@@ -17,11 +21,11 @@ from fork_ci import Blocked, validate_policy
 
 def public_cache(env):
     """Use only the operator's public read endpoint and verification key."""
-    endpoint = env.get('ATTIC_SUBSTITUTER', '')
-    key = env.get('ATTIC_PUBLIC_KEY', '')
+    endpoint = env.get('CACHE_SUBSTITUTER', '')
+    key = env.get('CACHE_PUBLIC_KEY', '')
     if not endpoint and not key:
         return ''
-    http2 = env.get('ATTIC_HTTP2', 'true')
+    http2 = env.get('CACHE_HTTP2', 'true')
     if http2 not in ('true', 'false'):
         raise Blocked('Cache HTTP/2 setting must be true or false')
     try:
@@ -63,42 +67,66 @@ def guard_public(source, targets):
             raise Blocked('Public derivation closure check failed; build and publication are blocked.')
 
 
+def cache_collector(source, targets, manifest, env):
+    script = Path(__file__).resolve().parents[1] / 'ci/retain-build-outputs.py'
+    spec = importlib.util.spec_from_file_location('retention', script)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    absolute = [str(source.resolve()) + target[1:] for target in targets]
+    return module.Collector(absolute, manifest.resolve(), env)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--system', required=True)
     parser.add_argument('--outputs', type=Path, required=True)
+    parser.add_argument('--cache-outputs', type=Path)
     args = parser.parse_args()
+    args.outputs.unlink(missing_ok=True)
+    if args.cache_outputs:
+        args.cache_outputs.unlink(missing_ok=True)
     policy = validate_policy(json.loads((args.source / '.fork-ci.json').read_text()))
     row = next(r for r in policy['matrix'] if r['system'] == args.system)
     env = {k: v for k, v in os.environ.items() if k not in
-           ['GH_TOKEN', 'GITHUB_TOKEN', 'ATTIC_TOKEN', 'SSH_AUTH_SOCK']}
-    if os.environ.get('ATTIC_TOKEN') or os.environ.get('GH_TOKEN'):
+           ['GH_TOKEN', 'GITHUB_TOKEN', 'CHANNEL_TOKEN', 'SOURCE_TOKEN', 'SSH_AUTH_SOCK',
+            'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL',
+            'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE']}
+    if any(os.environ.get(key) for key in ['GH_TOKEN', 'NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE']):
         raise Blocked('Build jobs must not receive publication credentials')
+    env['NIX_CONFIG'] = env.get('NIX_CONFIG', '') + '\n' + CACHE['nix_config']()
     substituter = public_cache(env)
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.source, env=env).strip()
     flags = ['--no-update-lock-file', '--no-write-lock-file',
-             '--option', 'accept-flake-config', 'false', '--option', 'builders', '',
-             '--option', 'substituters', 'https://cache.nixos.org',
-             '--option', 'extra-substituters', substituter]
+             '--option', 'accept-flake-config', 'false', '--option', 'builders', '']
     if substituter:
-        flags += ['--option', 'http2', env.get('ATTIC_HTTP2', 'true')]
+        flags += ['--option', 'http2', env.get('CACHE_HTTP2', 'true')]
     packages = ['.#packages.' + args.system + '.' + name for name in row['packages']]
     checks = ['.#checks.' + args.system + '.' + name for name in row.get('checks', [])]
     guard_public(args.source, packages + checks)
-    result = subprocess.check_output(['nix', 'build', '--no-link', '--json', *flags, *packages],
-                                     cwd=args.source, env=env)
-    roots = sorted({path for output in json.loads(result) for path in output['outputs'].values()})
-    if checks:
-        subprocess.run(['nix', 'build', '--no-link', *flags, *checks],
+    collector = cache_collector(args.source, packages + checks, args.cache_outputs, env) if args.cache_outputs else None
+    roots = []
+    try:
+        result = subprocess.check_output(['nix', 'build', '--no-link', '--json', *flags, *packages],
+                                         cwd=args.source, env=env)
+        roots = sorted({path for output in json.loads(result) for path in output['outputs'].values()})
+        if checks:
+            subprocess.run(['nix', 'build', '--no-link', *flags, *checks],
+                           cwd=args.source, env=env, check=True)
+        for command in row.get('tests', []):
+            subprocess.run(command, cwd=args.source, env=env, check=True)
+        # Advisory commands report problems in upstream-owned code (for example
+        # formatting) without rejecting an otherwise tested upstream sync.
+        for command in row.get('advisory_tests', []):
+            if subprocess.run(command, cwd=args.source, env=env).returncode:
+                print('::warning::Advisory check failed and does not block publication: ' + ' '.join(command[-3:]))
+        if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.source, env=env).strip() != head:
+            raise Blocked('Tests changed the candidate revision')
+        subprocess.run(['git', 'diff', '--no-ext-diff', '--no-textconv', '--exit-code', 'HEAD', '--ignore-submodules=none', '--'],
                        cwd=args.source, env=env, check=True)
-    for command in row.get('tests', []):
-        subprocess.run(command, cwd=args.source, env=env, check=True)
-    if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.source, env=env).strip() != head:
-        raise Blocked('Tests changed the candidate revision')
-    subprocess.run(['git', 'diff', '--no-ext-diff', '--no-textconv', '--exit-code', 'HEAD', '--ignore-submodules=none', '--'],
-                   cwd=args.source, env=env, check=True)
-    args.outputs.write_text('\n'.join(roots) + '\n')
+        args.outputs.write_text('\n'.join(roots) + '\n')
+    finally:
+        if collector:
+            collector.retain(roots)
     print('All selected package builds, checks and test commands passed.')
 
 

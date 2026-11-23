@@ -21,11 +21,11 @@ def matches(expression, event, ref):
 
 
 class ChannelWorkflowRefs(unittest.TestCase):
-    def generated(self, forge, directory, systems=('x86_64-linux',)):
+    def generated(self, forge, directory, systems=('x86_64-linux',), extra=None):
         root = Path(directory)
         (root / 'flake.nix').touch()
         policy = root / 'policy.json'
-        policy.write_text(json.dumps({'targets': {system: [] for system in systems}}))
+        policy.write_text(json.dumps({'targets': {system: [] for system in systems}, **(extra or {})}))
         args = SimpleNamespace(directory=root, forge=forge, repository='fixture/tool', branch='main', policy=policy)
         # JSON is a YAML subset. Capture generated job definitions using only
         # stdlib; production serialization remains PyYAML's safe_dump.
@@ -37,6 +37,115 @@ class ChannelWorkflowRefs(unittest.TestCase):
         names = ['release-channels', 'scheduled-updates', 'pr-checks']
         return {name: json.loads((folder / (name + '.yml')).read_text().split('\n', 1)[1])
                 for name in names if (folder / (name + '.yml')).exists()}
+
+    def test_install_initializes_monitor_config_and_preserves_existing_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.generated('forgejo', directory)
+            path = Path(directory) / 'ci/update-monitor.json'
+            self.assertEqual(json.loads(path.read_text()),
+                             {'version': 1, 'checks': [], 'exclude': [], 'upstreams': []})
+            existing = '{"checks": [["python3", "check-version.py"]], "exclude": ["vendor/"]}\n'
+            path.write_text(existing)
+            self.generated('forgejo', directory)
+            self.assertEqual(path.read_text(), existing)
+
+    def test_forgejo_determinate_policy_rejects_unsafe_settings(self):
+        invalid = [
+            ('forgejo', {'forgejoDeterminateImage': 'nixos/nix:latest', 'forgejoDeterminateLabels': ['nix']}),
+            ('forgejo', {'forgejoDeterminateImage': 'sha256:' + 'a' * 64, 'forgejoDeterminateLabels': ['braco']}),
+            ('forgejo', {'forgejoDeterminateLabels': ['nix']}),
+            ('github', {'forgejoDeterminateImage': 'sha256:' + 'a' * 64, 'forgejoDeterminateLabels': ['nix']}),
+        ]
+        for forge, policy in invalid:
+            with self.subTest(forge=forge, policy=policy), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(SystemExit):
+                    self.generated(forge, directory, extra=policy)
+
+    def test_forgejo_opt_in_only_changes_selected_container_labels(self):
+        # Without forgejoSharedDaemon, regeneration keeps the isolated daemon.
+        image = 'sha256:' + 'a' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.generated('forgejo', directory, ('x86_64-linux', 'aarch64-linux'),
+                                       {'forgejoDeterminateImage': image, 'forgejoDeterminateLabels': ['nix']})
+        changed = 0
+        for workflow in workflows.values():
+            for job in workflow['jobs'].values():
+                steps = [step for step in job['steps'] if step.get('name') == 'Start isolated Determinate daemon']
+                self.assertNotIn('volumes', job.get('container', {}))
+                self.assertNotIn('NIX_SHARED_DAEMON', job['env'])
+                if job['runs-on'] == 'nix':
+                    changed += 1
+                    self.assertEqual(job['container']['image'], image)
+                    self.assertEqual(job['env']['NIX_REMOTE'], 'daemon')
+                    self.assertIn('eval-cores = 2', job['env']['NIX_CONFIG'])
+                    self.assertEqual(len(steps), 1)
+                    self.assertIn('env -u NIX_REMOTE nix-daemon', steps[0]['run'])
+                else:
+                    self.assertFalse(steps)
+        self.assertGreater(changed, 0)
+
+    def test_shared_daemon_opt_in_connects_every_icicle_job(self):
+        image = installer.SHARED_DAEMON_IMAGE
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.generated('forgejo', directory, ('x86_64-linux', 'aarch64-linux'),
+                                       {'forgejoSharedDaemon': True, 'forgejoDeterminateImage': image,
+                                        'forgejoDeterminateLabels': ['nix']})
+        changed = 0
+        for workflow in workflows.values():
+            for job in workflow['jobs'].values():
+                steps = [step for step in job['steps'] if step.get('name') == 'Connect to the shared Icicle Nix daemon']
+                self.assertFalse([step for step in job['steps'] if step.get('name') == 'Start isolated Determinate daemon'])
+                if job['runs-on'] in ('nix','nix-light'):
+                    changed += 1
+                    self.assertEqual(job['container']['image'], image)
+                    # Untrusted listener and read-only store alias; no creds tmpfs.
+                    self.assertEqual(job['container']['volumes'], ['flakey-ci-nix-pr-v2-ro:/nix:ro',
+                        'flakey-ci-nix-pr-socket-untrusted-ro:/nix/var/nix/daemon-socket:ro'])
+                    self.assertEqual(job['env']['NIX_REMOTE'], 'daemon')
+                    self.assertEqual(job['env']['NIX_SHARED_DAEMON'], '1')
+                    self.assertIn('eval-cores = 2', job['env']['NIX_CONFIG'])
+                    self.assertEqual(len(steps), 1)
+                    self.assertEqual(steps[0]['run'],'bash ci/connect-shared-daemon.sh')
+                else:
+                    self.assertFalse(steps)
+        self.assertGreater(changed, 0)
+
+    def test_github_linux_builders_use_every_core_and_macos_stays_serial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = self.generated('github', directory, ('x86_64-linux', 'aarch64-linux', 'aarch64-darwin'))['release-channels']['jobs']
+        for system, cores in {'x86_64_linux': 'cores = 0', 'aarch64_linux': 'cores = 0', 'aarch64_darwin': 'cores = 1'}.items():
+            installs = [s for s in jobs['build_' + system]['steps'] if s.get('uses') == installer.INSTALL]
+            self.assertIn(cores + '\n', installs[0]['with']['extra-conf'], system)
+            self.assertIn('max-jobs = 1\n', installs[0]['with']['extra-conf'], system)
+
+    def test_github_bootstraps_determinate_with_intel_macos_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = self.generated('github', directory, ('x86_64-linux', 'x86_64-darwin'))
+        for workflow in workflows.values():
+            for job in workflow['jobs'].values():
+                steps = job['steps']
+                installs = [step for step in steps if step.get('uses') == installer.INSTALL]
+                if not installs:
+                    continue
+                self.assertEqual(len(installs), 1)
+                step = installs[0]
+                self.assertEqual(step['with']['source-tag'], 'v3.24.1')
+                self.assertIn('parallel-eval', step['with']['extra-conf'])
+                self.assertIn('eval-cores = 2', step['with']['extra-conf'])
+                self.assertIn("runner.arch == 'X64'", step['if'])
+                fallback = [s for s in steps if s.get('uses') == installer.INTEL_DARWIN_INSTALL]
+                self.assertEqual(len(fallback), 1)
+                self.assertIn("runner.os == 'macOS'", fallback[0]['if'])
+                self.assertTrue(any(s.get('name') == 'Check Determinate Nix and daemon' for s in steps))
+
+    def test_pr_selection_does_not_reference_dispatch_inputs(self):
+        for forge in ('github', 'forgejo'):
+            with tempfile.TemporaryDirectory() as directory:
+                workflows = self.generated(forge, directory)
+            pr = workflows['pr-checks']['jobs']['test']['steps'][-1]['env']
+            release = workflows['release-channels']['jobs']['test']['steps'][-1]['env']
+            self.assertEqual(pr, {'REVISION': '${{ github.sha }}'})
+            self.assertEqual(release, {'REVISION': '${{ inputs.revision || github.sha }}'})
 
     def test_forgejo_cron_runs_monitor_inputs_build_and_retention_on_bare_default_ref(self):
         with tempfile.TemporaryDirectory() as directory:

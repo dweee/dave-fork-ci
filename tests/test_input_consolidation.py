@@ -23,24 +23,53 @@ class Consolidation(unittest.TestCase):
         current = self.pr(3)
         others = [self.pr(1), self.pr(2, body='manual review'), self.pr(4, base={'ref': 'other'}),
                   self.pr(5, head={'ref': 'automation/input-updates-5', 'repo': {'full_name': 'fork/tool'}})]
-        with patch.object(a, 'api', return_value=[{'filename': 'flake.lock'}]) as api:
-            a.consolidate_input_prs(self.rules, '/repos/owner/tool', others + [current], current)
-        self.assertEqual(api.call_count, 2)
+        def response(rules, method, endpoint, data=None):
+            if '/contents/' in endpoint:
+                return {'type': 'file', 'sha': 'b'*40}
+            if endpoint.endswith('/files?limit=100&per_page=100'):
+                return [{'filename': 'flake.lock'}]
+            if method == 'GET' and endpoint.endswith('/pulls/1'):
+                return dict(others[0], state='open')
+            if method == 'GET' and endpoint.endswith('/pulls/3'):
+                return dict(current, state='open')
+            if method == 'PATCH':
+                return None
+            raise AssertionError('unexpected endpoint')
+        with patch.object(a, 'api', side_effect=response) as api:
+            a.consolidate_input_prs(self.rules, '/repos/owner/tool', others + [current], current, 'a'*40)
+        self.assertEqual(api.call_count, 6)
         self.assertEqual(api.call_args.args, (self.rules, 'PATCH', '/repos/owner/tool/pulls/1', {'state': 'closed'}))
 
     def test_manual_source_fixes_and_truncated_files_are_preserved(self):
-        for files in [[{'filename': 'src/lib.rs'}], [{'filename': 'flake.lock'}] * 100, []]:
+        for files in [[{'filename': 'src/lib.rs'}], [{'filename': 'flake.lock'}] * 100, [],
+                      [{'filename': 'flake.lock', 'previous_filename': 'settings.json', 'status': 'renamed'}],
+                      [{'filename': 'flake.lock', 'status': 'removed'}]]:
             with self.subTest(files=len(files)), patch.object(a, 'api', return_value=files) as api:
-                a.consolidate_input_prs(self.rules, '/repos/owner/tool', [self.pr(1)], self.pr(2))
+                a.consolidate_input_prs(self.rules, '/repos/owner/tool', [self.pr(1)], self.pr(2), 'a'*40)
                 self.assertEqual(api.call_count, 1)
 
     def test_missing_checks_are_dispatched_once_on_candidate_branch(self):
         with patch.object(a, 'api', return_value={'workflow_runs': []}) as api:
             a.dispatch_input_checks(self.rules, '/repos/owner/tool', self.pr(1))
-        self.assertEqual(api.call_args.args, (self.rules, 'POST', '/repos/owner/tool/actions/workflows/native.yml/dispatches', {'ref': 'automation/input-updates-1'}))
+        posts = [c.args for c in api.call_args_list if c.args[1] == 'POST']
+        self.assertEqual(posts, [
+            (self.rules, 'POST', '/repos/owner/tool/actions/workflows/native.yml/dispatches', {'ref': 'automation/input-updates-1'}),
+            (self.rules, 'POST', '/repos/owner/tool/actions/workflows/pr-checks.yml/dispatches', {'ref': 'automation/input-updates-1'})])
         with patch.object(a, 'api', return_value={'workflow_runs': [{'id': 1, 'conclusion': 'failure'}]}) as api:
             a.dispatch_input_checks(self.rules, '/repos/owner/tool', self.pr(1))
-        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_count, 2)
+
+    def test_the_required_pr_check_is_dispatched_even_when_not_listed_and_tolerates_old_installs(self):
+        error = a.HTTPError('u', 422, 'no dispatch trigger', {}, None)
+        def api(rules, method, endpoint, *rest):
+            if method == 'POST' and 'pr-checks' in endpoint:
+                raise error
+            return {'workflow_runs': []}
+        with patch.object(a, 'api', side_effect=api):
+            a.dispatch_input_checks(self.rules, '/repos/owner/tool', self.pr(1))
+        with patch.object(a, 'api', side_effect=api):
+            with self.assertRaises(a.HTTPError):
+                a.dispatch_input_checks(dict(self.rules, inputCheckWorkflows=['pr-checks.yml']), '/repos/owner/tool', self.pr(1))
 
     def test_dispatch_failure_keeps_old_candidates_open(self):
         with patch.object(a, 'api', side_effect=RuntimeError('dispatch refused')) as api:

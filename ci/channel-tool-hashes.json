@@ -1,9 +1,19 @@
 {
-  "release-channel.py": "5b8ef4305f8ef55bfa88bd64d6aa7da1c5ec9d0a58dbeb5c28865e00c05c8eb0",
-  "test-release-channel.py": "96eafc92765026c035fb23f338ecb8de78e1e45e7318b8742959d93b80e74c54",
-  "update-inputs.py": "679e008dbbe480fc48488e26a9dd773066e618e8be7cb33890ae8a5ca0ce90a8",
+  "caches.json": "5a4b74c7bf7d9815d9cde39492e570a29f4f27533b3a74a7490ac63de4b577d0",
+  "cache-config.py": "7fe4b74ce7997f050689f32627a250e2ca6ea8154ae2709a286c92e02f2626ab",
+  "release-channel.py": "1bf6bb4a1a2b6744bf5321dca1885b54b34de4e1dc73514cea3f54468b6d3d2f",
+  "test-release-channel.py": "10dac631bb983dc10fbd2bcdb80068294e00cfc7b0f70796e1aff065b9b99106",
+  "update-inputs.py": "ce66ee5c77a8b731cee10390c4123b9e467cb376e2443343fdf724baaecfb66f",
   "update-monitor.py": "85901f9d4fd95352a46211408b16497832b65d673541493adef2145899cf824c",
-  "test-update-automation.py": "1bf1c4a2799d0a0209c2894da92108479d55a4a638d8d41352884e322c6532fa",
-  "automation-forge.py": "d51f4dca8ba6dc50aef80869c5c72c6fae8c1f472ca2f83b18635c9111da5b52",
-  "configure-attic-read.py": "4b663ae0e073327dbcdcdaabef23a58a0a241f2f0fcfe3fd5f351b9242cbf669"
+  "test-update-automation.py": "989dccb8e0c93982f9e27685df48ac489f2c0187352fba6fbd290567d396d594",
+  "automation-forge.py": "1a810c9614cc40b6f48682a104e58e07657701ceb0212a0d1b808a77c825f60d",
+  "configure-niks3.py": "2820bbb9dd54f85040f1b79a6921f10632c397d154a26cedf5f5ab7ee4b1819b",
+  "push-niks3.py": "00b247f3b4829d5965ce57ac55698739816a337974913aa43aa4361ca7f42609",
+  "test-push-niks3.py": "ca2239a09fb2fb9862eb36d5b83cb93781b707771fc28b566fba8f1e999e0c37",
+  "niks3-oidc-token.py": "58569dc6c6d05232300aae7d03848c66f8678f832d51a1a5326f034da41b2e5f",
+  "install-niks3.sh": "51b65bd086f5bedab838f6d231783759b7a0daaf9671194a13502877de235e81",
+  "retain-build-outputs.py": "9ed1ea197bd63a137ff36a1dc30aaa1c44c0664f9bc96fd219442ce11b176b11",
+  "test-retain-build-outputs.py": "d79d25039859eea23bd25c81fe61086d6b4d3a374fdb441b41fef1359320071f",
+  "transfer-closures.py": "3c174d7dc785b5d43a93e220db74eb68f1e36da7cbe909d9aee61c708778f161",
+  "test-transfer-closures.py": "041b95a73ba7db58b4a32d3c5fd30f0010a147e1ab8e1dd08b84e6d9b75c0712"
 }

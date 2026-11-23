@@ -11,39 +11,25 @@ on:
         required: true
         type: string
       auto-merge:
-        description: Promote a fully tested and cached candidate to the fork default branch
+        description: Merge a pull request for the fully tested upstream candidate
         default: false
         type: boolean
       cache:
         description: Publish all selected package closures before main promotion
         default: true
         type: boolean
-      attic-endpoint:
-        default: ''
-        type: string
-      attic-cache:
-        default: ''
-        type: string
-      attic-substituter:
-        description: Optional public read-only cache URL for package builds and tests
-        default: ''
-        type: string
-      attic-public-key:
-        description: Public Nix verification key for the build cache
-        default: ''
-        type: string
       cache-http2:
         description: Use HTTP/2 when reading the public cache; false selects HTTPS over HTTP/1.1
         default: true
         type: boolean
+      check-workflow:
+        description: Workflow file whose `test` job gates promotion; dispatched on the candidate branch
+        default: pr-checks.yml
+        type: string
       max-closure-mib:
         description: Uncompressed export limit for each platform
         default: 4096
         type: number
-    secrets:
-      ATTIC_TOKEN:
-        description: Write token scoped only to the chosen candidate cache
-        required: false
     outputs:
       candidate:
         value: ${{ jobs.prepare.outputs.candidate }}
@@ -115,19 +101,31 @@ jobs:
           persist-credentials: false
           submodules: recursive
           fetch-depth: 0
-      - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+      - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3 # v3
         with:
-          nix_version: '2.34.7'
-          nix_conf: |
+          source-tag: v3.24.1
+          summarize: false
+          kvm: false
+          extra-conf: |
+            experimental-features = nix-command flakes parallel-eval
+            eval-cores = 2
             accept-flake-config = false
-            substituters = https://cache.nixos.org
+      - name: Configure common public caches
+        run: |
+          echo "NIX_CONFIG<<FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
+          python3 controller/ci/cache-config.py >> "$GITHUB_ENV"
+          echo "FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
+      - name: Verify Determinate client and daemon
+        run: |
+          nix --version | grep -F 'Determinate Nix 3.24.1'
+          nix store info --store daemon --json
       - name: Scan incoming history with trusted rules
         env:
           BASE: ${{ needs.prepare.outputs.base }}
           CANDIDATE: ${{ needs.prepare.outputs.candidate }}
         run: |
-          scanner=$(nix build --no-link --print-out-paths --max-jobs 0 --builders '' \
-            --option accept-flake-config false --option substituters https://cache.nixos.org \
+          scanner=$(nix build --out-link "$RUNNER_TEMP/gitleaks" --print-out-paths --max-jobs 0 --builders '' \
+            --option accept-flake-config false \
             github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0#gitleaks)
           cat > "$RUNNER_TEMP/scanner.toml" << 'EOF'
           [extend]
@@ -144,6 +142,22 @@ jobs:
           paths = ['''^decompiler/crates/kuna-console/src/grammar\.rs$''']
           regexTarget = "line"
           regexes = ['''^\s*let mut key = 0x6c62272e07bb014262b821756295c58du128;$''']
+
+          [[allowlists]]
+          description = "Kuna provenance snapshots (plain or gzipped) map source paths to SHA-256 digests"
+          targetRules = ["generic-api-key", "sentry-access-token"]
+          condition = "AND"
+          paths = ['''^docs/features/[^/]+/(?:.+/)?[^/]*source-before[^/]*\.json(?:\.gz)?$''']
+          regexTarget = "line"
+          regexes = ['''^\s*"[^"]+": "[0-9a-f]{64}",?$''']
+
+          [[allowlists]]
+          description = "Kuna decompiler output names its synthesized identifiers _kuna_ident_<hex>"
+          targetRules = ["generic-api-key"]
+          condition = "AND"
+          paths = ['''^docs/features/goformals/[^/]+\.diff$''']
+          regexTarget = "secret"
+          regexes = ['''^_kuna_ident_[0-9a-f]+$''']
           EOF
           mkdir -p "$RUNNER_TEMP/empty-ignore"
           "$scanner/bin/gitleaks" git candidate --config "$RUNNER_TEMP/scanner.toml" \
@@ -153,29 +167,33 @@ jobs:
       - name: Build packages and run fork checks
         env:
           SYSTEM: ${{ matrix.system }}
-          ATTIC_SUBSTITUTER: ${{ inputs.attic-substituter }}
-          ATTIC_PUBLIC_KEY: ${{ inputs.attic-public-key }}
-          ATTIC_HTTP2: ${{ inputs.cache-http2 }}
-        run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt
+          CACHE_HTTP2: ${{ inputs.cache-http2 }}
+        run: python3 controller/bin/build.py --source candidate --system "$SYSTEM" --outputs outputs.txt ${{ inputs.cache && '--cache-outputs cache-outputs.txt' || '' }}
+      # Only the cache job reads this export; without it, an over-limit closure
+      # would fail a build that publishes nothing.
       - name: Export runtime closures as data
+        id: cache_transfer
+        if: ${{ always() && !cancelled() && inputs.cache && hashFiles('cache-outputs.txt') != '' }}
         env:
-          ATTIC_MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
-        run: python3 controller/ci/transfer-attic.py export --directory attic-transfer
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
+        run: python3 controller/ci/transfer-closures.py export --directory closure-transfer --manifest cache-outputs.txt
+      - if: ${{ always() && !cancelled() && inputs.cache && steps.cache_transfer.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fork-cache-${{ matrix.system }}-${{ needs.prepare.outputs.candidate }}
-          path: attic-transfer/
+          path: closure-transfer/
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
 
   cache:
     needs: [prepare, build]
-    if: inputs.cache && needs.build.result == 'success'
+    if: ${{ always() && !cancelled() && inputs.cache && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'failure') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -186,34 +204,45 @@ jobs:
           ref: ${{ inputs.tool-revision }}
           path: controller
           persist-credentials: false
-      - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+      - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3 # v3
         with:
-          nix_version: '2.34.7'
-          nix_conf: |
+          source-tag: v3.24.1
+          summarize: false
+          kvm: false
+          extra-conf: |
+            experimental-features = nix-command flakes parallel-eval
+            eval-cores = 2
             accept-flake-config = false
-            substituters = https://cache.nixos.org
-      - name: Install trusted Attic before importing untrusted closures
+      - name: Configure common public caches
         run: |
-          client=$(nix build --no-link --print-out-paths --max-jobs 0 --builders '' \
-            --option accept-flake-config false --option substituters https://cache.nixos.org \
-            github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0#attic-client)
-          echo "ATTIC_BIN=$client/bin/attic" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+          echo "NIX_CONFIG<<FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
+          python3 controller/ci/cache-config.py >> "$GITHUB_ENV"
+          echo "FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
+      - name: Verify Determinate client and daemon
+        run: |
+          nix --version | grep -F 'Determinate Nix 3.24.1'
+          nix store info --store daemon --json
+      - name: Read Niks3 before installing the pinned publisher
+        run: python3 controller/ci/configure-niks3.py --oidc
+      - name: Install pinned Niks3 before importing closures
+        run: bash controller/ci/install-niks3.sh --retain-bootstrap
+      - name: Publish bootstrap client and completed build dependencies
+        run: python3 controller/ci/push-niks3.py --outputs niks3-bootstrap-outputs.txt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: fork-cache-${{ matrix.system }}-${{ needs.prepare.outputs.candidate }}
-          path: attic-transfer
+          path: closure-transfer
       - name: Import data without running candidate programs
         env:
-          ATTIC_MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
-        run: python3 controller/ci/transfer-attic.py import --directory attic-transfer
-      - name: Publish selected closures to candidate cache
-        env:
-          ATTIC_ENDPOINT: ${{ inputs.attic-endpoint }}
-          ATTIC_CACHE: ${{ inputs.attic-cache }}
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
-        run: python3 controller/ci/push-attic.py --outputs attic-transfer/outputs.txt
+          MAX_CLOSURE_MIB: ${{ inputs.max-closure-mib }}
+        run: python3 controller/ci/transfer-closures.py import --directory closure-transfer
+      - name: Publish selected closures to Niks3 via GitHub OIDC
+        run: python3 controller/ci/push-niks3.py --outputs closure-transfer/outputs.txt
+      - name: Remove job-local Niks3 reader
+        if: ${{ always() }}
+        run: python3 controller/ci/configure-niks3.py --cleanup
 
-  promote:
+  gate:
     needs: [prepare, build, cache]
     if: >-
       always() && !cancelled() && inputs.auto-merge &&
@@ -221,8 +250,44 @@ jobs:
       needs.prepare.outputs.changed == 'true' && needs.build.result == 'success' &&
       ((inputs.cache && needs.cache.result == 'success') ||
        (!inputs.cache && needs.cache.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ inputs.tool-repository }}
+          ref: ${{ inputs.tool-revision }}
+          path: controller
+          persist-credentials: false
+      - id: gate
+        uses: ./controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          phase: gate
+          check-workflow: ${{ inputs.check-workflow }}
+          target-branch: ${{ github.event.repository.default_branch }}
+          work-directory: ${{ runner.temp }}/fork-gate
+          base: ${{ needs.prepare.outputs.base }}
+          candidate: ${{ needs.prepare.outputs.candidate }}
+
+  promote:
+    needs: [prepare, build, cache, gate]
+    if: >-
+      always() && !cancelled() && inputs.auto-merge &&
+      vars.FORK_CI_AUTO_MERGE == 'true' && needs.prepare.result == 'success' &&
+      needs.prepare.outputs.changed == 'true' && needs.build.result == 'success' &&
+      needs.gate.result == 'success' &&
+      ((inputs.cache && needs.cache.result == 'success') ||
+       (!inputs.cache && needs.cache.result == 'skipped'))
     permissions:
       contents: write
+      pull-requests: write
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:

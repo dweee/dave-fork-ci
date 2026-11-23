@@ -44,10 +44,31 @@ class LifecycleTests(fixtures.MergeTests):
             return original(repo, *args, **kwargs)
 
         def local_push(repo, url, source, destination, expected=None):
+            self.assertEqual(destination, 'refs/heads/sync/upstream/' + source)
             subprocess.run(['git', 'push', '--quiet', str(self.fork), source + ':' + destination], cwd=repo, check=True)
             subprocess.run(['git', '--git-dir', str(self.fork), 'update-server-info'], check=True)
 
-        for mock in [patch.object(ci, 'git', side_effect=local_git), patch.object(ci, 'push', side_effect=local_push),
+        def local_pull(method, endpoint, payload=None):
+            if method == 'GET' and '/pulls?' in endpoint:
+                return []
+            if method == 'POST' and endpoint.endswith('/pulls'):
+                self.pull_head = payload['head'].removeprefix('sync/upstream/')
+                self.assertEqual(payload['base'], 'main')
+                return {'number': 1}
+            if method == 'GET' and endpoint.endswith('/pulls/1'):
+                target = ci.text(self.fork, 'rev-parse', 'refs/heads/main')
+                return {'state': 'open', 'head': {'sha': self.pull_head},
+                        'base': {'sha': target, 'ref': 'main'}}
+            if method == 'PUT' and endpoint.endswith('/pulls/1/merge'):
+                self.assertEqual(payload, {'sha': self.pull_head, 'merge_method': 'merge'})
+                ci.git(self.fork, 'update-ref', 'refs/heads/main', self.pull_head)
+                ci.git(self.fork, 'update-server-info')
+                return {'merged': True}
+            self.fail('Unexpected GitHub pull request call')
+
+        for mock in [patch.object(ci, 'git', side_effect=local_git),
+                     patch.object(ci, 'push', side_effect=local_push),
+                     patch.object(ci, 'github_call', side_effect=local_pull),
                      patch.object(ci, 'latest_release', return_value=None)]:
             mock.start()
             self.addCleanup(mock.stop)

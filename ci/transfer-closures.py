@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Transfer selected Nix outputs between disposable jobs without running them."""
 import argparse
+import errno
 import gzip
 import hashlib
 import importlib.util
@@ -16,11 +17,15 @@ policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 
 
+class TransferSizeExceeded(ValueError):
+    """The uncompressed transfer stream exceeded its configured limit."""
+
+
 def roots(manifest):
     if manifest.stat().st_size > 1024 * 1024:
         raise ValueError("Output manifest is too large")
     paths = list(dict.fromkeys(manifest.read_text().splitlines()))
-    if not paths or len(paths) > 1024 or any(not re.fullmatch(r"/nix/store/[a-z0-9]{32}-[^/\s]+", p)
+    if not paths or len(paths) > 8192 or any(not re.fullmatch(r"/nix/store/[a-z0-9]{32}-[^/\s]+", p)
                                            or p.endswith(".drv") for p in paths):
         raise ValueError("Invalid output manifest")
     return paths
@@ -31,18 +36,18 @@ def copy_bounded(source, target, limit):
     while chunk := source.read(1024 * 1024):
         total += len(chunk)
         if total > limit:
-            raise ValueError("Closure transfer exceeds ATTIC_MAX_CLOSURE_MIB")
+            raise TransferSizeExceeded()
         target.write(chunk)
     return total
 
 
-def transfer(mode, directory, limit):
-    if os.environ.get("ATTIC_TOKEN"):
-        raise ValueError("A transfer job must not receive an Attic upload credential")
+def transfer(mode, directory, limit, source_manifest=None):
+    if any(os.environ.get(name) for name in ('NIKS3_WRITE_TOKEN', 'NIKS3_AUTH_TOKEN_FILE')):
+        raise ValueError("A transfer job must not receive an upload credential")
     directory.mkdir(parents=True, exist_ok=True)
     manifest = directory / "outputs.txt"
     if mode == "export":
-        paths = roots(Path("outputs.txt"))
+        paths = roots(source_manifest or Path("outputs.txt"))
         # Reject denied runtime paths before an archive or public artifact exists.
         requisites = policy.runtime(paths)
         if any(not re.fullmatch(r"/nix/store/[a-z0-9]{32}-[^/\s]+", p) for p in requisites):
@@ -50,7 +55,7 @@ def transfer(mode, directory, limit):
         process = subprocess.Popen(["nix-store", "--export", *requisites], stdout=subprocess.PIPE)
         try:
             with gzip.open(directory / "closure.nar.gz", "wb", compresslevel=1) as archive:
-                copy_bounded(process.stdout, archive, limit)
+                size = copy_bounded(process.stdout, archive, limit)
             if process.wait():
                 raise ValueError("Closure export failed")
             manifest.write_text("\n".join(paths) + "\n")
@@ -62,6 +67,7 @@ def transfer(mode, directory, limit):
             (directory / "SHA256SUMS").write_text(digest.hexdigest() + "  closure.nar.gz\n")
             with (directory / "closure-info.json").open("w") as stream:
                 subprocess.run(["nix", "path-info", "--json", "--recursive", *paths], stdout=stream, check=True)
+            print(f"Exported Nix closure: {size} uncompressed bytes (limit {limit} bytes).", flush=True)
 
         finally:
             if process.poll() is None:
@@ -70,7 +76,7 @@ def transfer(mode, directory, limit):
     else:
         paths = roots(manifest)
         # Import NAR data only. Existing trusted client paths were installed from
-        # cache.nixos.org before this step and cannot be replaced by this import.
+        # trusted substituters before this step and cannot be replaced by this import.
         process = subprocess.Popen(["nix-store", "--import", "--option", "require-sigs", "false"],
                                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
         try:
@@ -82,7 +88,7 @@ def transfer(mode, directory, limit):
             subprocess.run(["nix-store", "--check-validity", *paths], check=True)
             policy.runtime(paths)
             # The export/import format drops signatures. Restore them only
-            # from the official cache so Attic can skip its existing outputs.
+            # from the official cache so the publisher can skip existing outputs.
             # Builder-supplied metadata never decides which paths to skip.
             subprocess.run(["nix", "store", "copy-sigs", "--substituter",
                             "https://cache.nixos.org", "--recursive", *paths],
@@ -97,13 +103,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["export", "import"])
     parser.add_argument("--directory", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
     args = parser.parse_args()
     try:
-        mib = int(os.environ.get("ATTIC_MAX_CLOSURE_MIB") or "2048")
-        if not 1 <= mib <= 4096:
-            raise ValueError("Closure transfer limit must be between 1 and 4096 MiB")
-        transfer(args.mode, args.directory, mib * 1024 * 1024)
-    except (OSError, ValueError, subprocess.SubprocessError):
+        mib = int(os.environ.get("MAX_CLOSURE_MIB") or "2048")
+        if not 1 <= mib <= 8192:
+            raise ValueError("Closure transfer limit must be between 1 and 8192 MiB")
+        if args.manifest is not None:
+            if args.mode != 'export':
+                raise ValueError('Only export selects a source manifest')
+            transfer(args.mode, args.directory, mib * 1024 * 1024, args.manifest)
+        else:
+            transfer(args.mode, args.directory, mib * 1024 * 1024)
+    except TransferSizeExceeded:
+        print("Nix closure transfer exceeded MAX_CLOSURE_MIB; no cache publication is authorized.", file=sys.stderr)
+        return 1
+    except OSError as error:
+        if error.errno in (errno.ENOSPC, errno.EDQUOT):
+            print("Nix closure transfer ran out of disk space or quota; no cache publication is authorized.", file=sys.stderr)
+        else:
+            print("Nix closure transfer failed; no cache publication is authorized.", file=sys.stderr)
+        return 1
+    except (ValueError, subprocess.SubprocessError):
         print("Nix closure transfer failed; no cache publication is authorized.", file=sys.stderr)
         return 1
     return 0

@@ -36,25 +36,24 @@ class BuildAndWorkflowTests(unittest.TestCase):
             outputs = root / 'outputs.txt'
             path = '/nix/store/' + 'a' * 32 + '-package'
             with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
-                 patch.dict(os.environ, {'ATTIC_SUBSTITUTER': endpoint, 'ATTIC_PUBLIC_KEY': key, 'ATTIC_HTTP2': 'false'}, clear=True), \
+                 patch.dict(os.environ, {'CACHE_SUBSTITUTER': endpoint, 'CACHE_PUBLIC_KEY': key, 'CACHE_HTTP2': 'false'}, clear=True), \
                  patch.object(build.subprocess, 'check_output', side_effect=lambda args, **kw: b'a' * 40 if args[0] == 'git' else json.dumps([{'outputs': {'out': path}}]).encode()) as call, \
                  patch.object(build.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 build.main()
             args = call.call_args_list[1].args[0]
-            self.assertEqual(args[args.index('extra-substituters') + 1], endpoint)
             self.assertEqual(args[args.index('http2') + 1], 'false')
             env = call.call_args_list[1].kwargs['env']
             self.assertIn('extra-substituters = ' + endpoint, env['NIX_CONFIG'])
             self.assertIn('extra-trusted-public-keys = ' + key, env['NIX_CONFIG'])
             self.assertIn('http2 = false', env['NIX_CONFIG'])
-            self.assertNotIn('ATTIC_TOKEN', env)
+            self.assertNotIn('NIKS3_WRITE_TOKEN', env)
 
     def test_cache_transport_setting_rejects_configuration_injection(self):
         key = 'packages:' + base64.b64encode(bytes(range(32))).decode()
         for value in ['false\nrequire-sigs = false', '', '0', 'invalid']:
             with self.subTest(value=value), self.assertRaises(fork_ci.Blocked):
-                build.public_cache({'ATTIC_SUBSTITUTER': 'https://cache.example.org',
-                                    'ATTIC_PUBLIC_KEY': key, 'ATTIC_HTTP2': value})
+                build.public_cache({'CACHE_SUBSTITUTER': 'https://cache.example.org',
+                                    'CACHE_PUBLIC_KEY': key, 'CACHE_HTTP2': value})
 
     def test_invalid_public_cache_settings_cannot_inject_nix_configuration(self):
         endpoint = 'https://cache.example.org/packages'
@@ -67,7 +66,7 @@ class BuildAndWorkflowTests(unittest.TestCase):
                  (endpoint, key + '\nrequire-sigs = false'), (endpoint, 'packages:eA==')]
         for url, public_key in cases:
             with self.subTest(url=url, public_key=public_key), self.assertRaises(fork_ci.Blocked):
-                build.public_cache({'ATTIC_SUBSTITUTER': url, 'ATTIC_PUBLIC_KEY': public_key})
+                build.public_cache({'CACHE_SUBSTITUTER': url, 'CACHE_PUBLIC_KEY': public_key})
 
     def test_build_uses_explicit_system_and_disables_flake_cache_settings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -112,9 +111,27 @@ class BuildAndWorkflowTests(unittest.TestCase):
             root = Path(directory)
             (root / '.fork-ci.json').write_text(json.dumps(POLICY))
             with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(root / 'out')]), \
-                 patch.dict(os.environ, {'ATTIC_TOKEN': 'synthetic-regression-fixture', 'PATH': os.environ['PATH']}, clear=True):
+                 patch.dict(os.environ, {'NIKS3_WRITE_TOKEN': 'synthetic-regression-fixture', 'PATH': os.environ['PATH']}, clear=True):
                 with self.assertRaises(fork_ci.Blocked):
                     build.main()
+
+    def test_failed_advisory_command_warns_without_blocking(self):
+        import copy
+        import subprocess
+        policy = copy.deepcopy(POLICY)
+        policy['matrix'][0]['advisory_tests'] = [['fmt-check']]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.fork-ci.json').write_text(json.dumps(policy))
+            outputs = root / 'outputs.txt'
+            def run(command, **kwargs):
+                return subprocess.CompletedProcess(command, 1 if command == ['fmt-check'] else 0)
+            with patch.object(sys, 'argv', ['build', '--source', str(root), '--system', 'x86_64-linux', '--outputs', str(outputs)]), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch.object(build.subprocess, 'check_output', return_value=b'[{"outputs":{"out":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package"}}]'), \
+                 patch.object(build.subprocess, 'run', side_effect=run):
+                build.main()
+            self.assertTrue(outputs.exists())
 
     def test_failed_regression_command_never_writes_success_manifest(self):
         import copy
@@ -154,9 +171,10 @@ class BuildAndWorkflowTests(unittest.TestCase):
         self.assertNotIn('contents: write', build_job)
         self.assertNotIn('GH_TOKEN:', build_job)
         cache_job = source.split('\n  cache:', 1)[1].split('\n  promote:', 1)[0]
-        self.assertLess(cache_job.index('Install trusted Attic'), cache_job.index('Import data'))
-        self.assertEqual(cache_job.count('secrets.ATTIC_TOKEN'), 1)
-        self.assertIn('--outputs attic-transfer/outputs.txt', cache_job)
+        self.assertLess(cache_job.index('Install pinned Niks3'), cache_job.index('Import data'))
+        self.assertNotIn('secrets.', cache_job)
+        self.assertIn('push-niks3.py', cache_job)
+        self.assertIn('--outputs closure-transfer/outputs.txt', cache_job)
         promote = source.split('\n  promote:', 1)[1]
         self.assertIn("needs.build.result == 'success'", promote)
         self.assertIn("needs.cache.result == 'success'", promote)
@@ -186,10 +204,56 @@ class BuildAndWorkflowTests(unittest.TestCase):
         self.assertFalse(allowed('        let mut key = "unrelated-fixture-value";'))
         self.assertFalse(allowed('let mut key = 0x6c62272e07bb014262b821756295c58du128; api_key = "unrelated";'))
 
+    def test_scanner_provenance_exception_covers_only_digest_lines_in_snapshots(self):
+        import re
+        import textwrap
+        import tomllib
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
+        config = source.split("<< 'EOF'\n", 1)[1].split('          EOF', 1)[0]
+        allowlist = tomllib.loads(textwrap.dedent(config))['allowlists'][2]
+        self.assertEqual((allowlist['regexTarget'], allowlist['condition']), ('line', 'AND'))
+        self.assertEqual(allowlist['targetRules'], ['generic-api-key', 'sentry-access-token'])
+        path = lambda name: any(re.search(pattern, name) for pattern in allowlist['paths'])
+        self.assertTrue(path('docs/features/rustptradd/parent-source-before-timing.json'))
+        self.assertTrue(path('docs/features/rustarrayzero/failed-default-on/parent-source-before-timing.json.gz'))
+        self.assertFalse(path('docs/features/rustptradd/notes.json.gz'))
+        self.assertFalse(path('src/parent-source-before-timing.json'))
+        line = lambda text: any(re.search(pattern, text) for pattern in allowlist['regexes'])
+        self.assertTrue(line('    "decompiler/Makefile": "' + 'ab' * 32 + '",'))
+        self.assertFalse(line('    "token": "sntrys_' + 'ab' * 32 + '",'))
+
+    def test_closure_export_runs_only_for_the_cache_job(self):
+        source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
+        build_job = source.split('\n  build:', 1)[1].split('\n  cache:', 1)[0]
+        export = build_job.split('- name: Export runtime closures as data', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('inputs.cache', export)
+        self.assertIn('always() && !cancelled()', export)
+        self.assertIn("hashFiles('cache-outputs.txt') != ''", export)
+        self.assertIn('--manifest cache-outputs.txt', export)
+        upload = build_job.split('actions/upload-artifact@', 1)[0].rsplit('\n      - ', 1)[1]
+        self.assertIn('inputs.cache', upload)
+        self.assertIn("steps.cache_transfer.outcome == 'success'", upload)
+
+    def test_failed_candidate_checks_retain_cache_data_without_success_manifest(self):
+        import copy
+        policy = copy.deepcopy(POLICY);policy['matrix'][0]['tests']=[['regression-check']]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'.fork-ci.json').write_text(json.dumps(policy))
+            outputs=root/'outputs';cache=root/'cache'
+            path='/nix/store/'+'a'*32+'-package'
+            with patch.object(sys,'argv',['build','--source',str(root),'--system','x86_64-linux','--outputs',str(outputs),'--cache-outputs',str(cache)]), \
+                    patch.dict(os.environ,{},clear=True), \
+                    patch.object(build,'cache_collector') as collector, \
+                    patch.object(build.subprocess,'check_output',side_effect=lambda args,**kw:b'a'*40 if args[0]=='git' else json.dumps([{'outputs':{'out':path}}]).encode()), \
+                    patch.object(build.subprocess,'run',side_effect=fail_command(['regression-check'])):
+                with self.assertRaises(subprocess.CalledProcessError):build.main()
+                collector.return_value.retain.assert_called_once_with([path])
+            self.assertFalse(outputs.exists())
+
     def test_all_external_actions_are_pinned(self):
         import re
         source = (ROOT / '.github/workflows/upstream-sync.yml').read_text()
-        for reference in re.findall(r'uses: (\S+)', source):
+        for reference in re.findall(r'^\s*(?:- )?uses: (\S+)', source, re.M):
             if not reference.startswith('./'):
                 self.assertRegex(reference, r'@[0-9a-f]{40}$')
 

@@ -25,7 +25,7 @@ jobs:
           repository: dweee/dave-fork-ci
           ref: ${{ inputs.tool-revision }}
           persist-credentials: false
-      - name: Preserve data archives independently of Attic
+      - name: Preserve data archives independently of the cache
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_RUN_ID: ${{ inputs.run-id }}

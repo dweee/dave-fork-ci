@@ -1,4 +1,8 @@
 {
   "version": 1,
-  "inputs": {}
+  "inputs": {
+    "nixpkgs": {
+      "source": "github:NixOS/nixpkgs/nixpkgs-unstable"
+    }
+  }
 }

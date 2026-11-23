@@ -20,6 +20,34 @@ POLICY = {'version': 1, 'upstream': 'example/project', 'branch': 'main', 'track'
           'matrix': [{'system': 'x86_64-linux', 'packages': ['default'], 'checks': [], 'tests': []}]}
 
 
+
+class NativeRunnerPolicyTests(unittest.TestCase):
+    def test_existing_platform_defaults_are_unchanged(self):
+        for system, expected in ci.RUNNERS.items():
+            with self.subTest(system=system):
+                self.assertEqual(ci.policy_runner({'system': system}), expected)
+
+    def test_pared_can_select_its_maintained_xcode_27_route(self):
+        policy = copy.deepcopy(POLICY)
+        policy['matrix'] = [{'system': 'aarch64-darwin', 'runner': 'xcode-27',
+                             'packages': ['pared'], 'checks': [], 'tests': []}]
+        self.assertEqual(ci.validate_policy(policy), policy)
+        self.assertEqual(ci.policy_runner(policy['matrix'][0]), 'xcode-27')
+
+    def test_arbitrary_or_cross_platform_runner_overrides_fail_closed(self):
+        for system, runner in [('aarch64-darwin', 'self-hosted'),
+                               ('aarch64-darwin', ['self-hosted', 'xcode-27']),
+                               ('aarch64-darwin', '${{ secrets.RUNNER }}'),
+                               ('x86_64-linux', 'xcode-27'),
+                               ('aarch64-linux', 'macos-15'),
+                               ('aarch64-darwin', None)]:
+            with self.subTest(system=system, runner=runner):
+                policy = copy.deepcopy(POLICY)
+                policy['matrix'][0].update(system=system, runner=runner)
+                with self.assertRaises(ci.Blocked):
+                    ci.validate_policy(policy)
+
+
 class MergeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -63,6 +91,59 @@ class MergeTests(unittest.TestCase):
         ci.verify(self.repo, self.base, candidate, self.base, POLICY)
         self.assertEqual(ci.text(self.repo, 'show', '-s', '--format=%an <%ae>', candidate), 'dave <git@d.monke.fail>')
         self.assertEqual(ci.text(self.repo, 'rev-parse', candidate + '~2'), self.base)
+
+    def gate_args(self):
+        import argparse
+        return argparse.Namespace(repository='owner/tool', candidate='c' * 40, workflow='pr-checks.yml', check='test')
+
+    def run_for(self, status, conclusion='success', sha='c' * 40):
+        return {'workflow_runs': [{'id': 123, 'head_sha': sha, 'status': status, 'conclusion': conclusion,
+                                   'head_branch': 'sync/upstream/' + sha, 'event': 'workflow_dispatch'}]}
+
+    def test_gate_dispatches_the_check_on_the_candidate_branch_and_waits_for_success(self):
+        calls = []
+        jobs = {'jobs': [{'name': 'test', 'head_sha': 'c' * 40, 'conclusion': 'success'}]}
+        replies = iter([{}, {}, self.run_for('queued', None), self.run_for('completed'), jobs, {}])
+        def call(method, endpoint, payload=None):
+            calls.append((method, endpoint, payload))
+            return next(replies)
+        with patch.object(ci, 'github_call', call), patch.object(ci, 'emit') as emit:
+            ci.gate(self.gate_args(), sleep=lambda n: None)
+        self.assertEqual(calls[1], ('POST', 'repos/owner/tool/actions/workflows/pr-checks.yml/dispatches',
+                                    {'ref': 'sync/upstream/' + 'c' * 40}))
+        self.assertIn('pr-checks.yml/runs?head_sha=' + 'c' * 40, calls[2][1])
+        self.assertEqual(calls[-1][:2], ('POST', 'repos/owner/tool/statuses/' + 'c' * 40))
+        self.assertEqual((calls[-1][2]['state'], calls[-1][2]['context']), ('success', 'test'))
+        emit.assert_called_with({'gated': 'passed'})
+
+    def test_gate_blocks_when_the_status_cannot_be_recorded(self):
+        jobs = {'jobs': [{'name': 'test', 'head_sha': 'c' * 40, 'conclusion': 'success'}]}
+        replies = iter([{}, {}, self.run_for('completed'), jobs, None])
+        with patch.object(ci, 'github_call', lambda *a, **k: next(replies)), patch.object(ci, 'emit') as emit:
+            with self.assertRaises(ci.Blocked):
+                ci.gate(self.gate_args(), sleep=lambda n: None)
+        emit.assert_not_called()
+
+    def test_gate_rejects_failed_foreign_and_missing_checks(self):
+        for runs, jobs in [
+                (self.run_for('completed', 'failure'), {}),
+                (self.run_for('completed', sha='d' * 40), {}),
+                (self.run_for('completed'), {'jobs': [{'name': 'test', 'head_sha': 'c' * 40, 'conclusion': 'skipped'}]}),
+                ({'workflow_runs': []}, {})]:
+            replies = iter([{}, {}, runs, jobs])
+            with self.subTest(runs=runs), patch.object(ci, 'github_call', lambda *a, **k: next(replies)):
+                with self.assertRaises(ci.Blocked):
+                    ci.gate(self.gate_args(), sleep=lambda n: None, timeout=0)
+
+    def test_gate_defers_to_the_ruleset_when_no_check_workflow_exists(self):
+        with patch.object(ci, 'github_call', return_value=None), patch.object(ci, 'emit') as emit:
+            ci.gate(self.gate_args(), sleep=lambda n: None)
+        emit.assert_called_once_with({'gated': 'skipped'})
+
+    def test_gate_blocks_when_configured_workflow_cannot_be_dispatched(self):
+        with patch.object(ci, 'github_call', side_effect=[{}, None]):
+            with self.assertRaisesRegex(ci.Blocked, 'cannot be dispatched'):
+                ci.gate(self.gate_args(), sleep=lambda n: None)
 
     def test_promotion_rejects_main_advanced_since_build(self):
         candidate = self.candidate(self.upstream())
