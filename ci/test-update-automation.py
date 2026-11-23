@@ -26,6 +26,12 @@ a = load('automation-forge')
 
 
 class Updates(unittest.TestCase):
+    def test_monitor_reports_failed_group_without_echoing_updater_output(self):
+        output = 'sensitive-token\n[\n  {\n    "group": "manual",\n    "status": "failure",\n    "exit_code": 1\n  }\n]'
+        diagnostic = m.check_diagnostics(output, 'secret stderr', 1, True)
+        self.assertEqual(diagnostic, {'exitCode': 1, 'trackedFilesChanged': False, 'failedGroups': ['manual']})
+        self.assertNotIn('secret', json.dumps(diagnostic))
+
     def test_updater_failure_detail_redacts_credentials(self):
         text = 'noise\nerror: unable to download https://u:p@api.github.com/x: HTTP error 403 ghp_abcDEF123 secret-tok'
         detail = u.safe_detail(text, 'secret-tok')
