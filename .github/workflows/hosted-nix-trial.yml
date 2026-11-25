@@ -1,0 +1,173 @@
+name: Hosted Nix cleanup trial
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hosted-nix-trial.yml
+      - ci/hosted-nix-*
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: hosted-nix-trial-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - id: matrix
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          trials = json.loads(Path('ci/hosted-nix-trial.json').read_text())['trials']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': trials}, separators=(',', ':')) + '\n')
+          PY
+  smoke:
+    name: Native smoke (${{ matrix.runner }}, ${{ matrix.mode }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        mode: [current, cleave]
+    env:
+      TRIAL_MODE: ${{ matrix.mode }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Measure initial disk headroom
+        run: python3 ci/hosted-nix-metrics.py before
+      - name: Existing Linux SDK cleanup baseline
+        if: matrix.mode == 'current' && runner.os == 'Linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+      - name: Reclaim hosted runner space
+        if: matrix.mode == 'cleave'
+        uses: wimpysworld/nothing-but-nix@c42920bb7515b766b1c69f5db46cb13124270f7e
+        with:
+          hatchet-protocol: cleave
+          # Closure exports and upload staging still write outside /nix.
+          root-safe-haven: '16384'
+          witness-carnage: true
+      - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3
+        with:
+          source-tag: v3.24.1
+          summarize: false
+          kvm: false
+          extra-conf: |
+            experimental-features = nix-command flakes parallel-eval
+            eval-cores = 2
+            accept-flake-config = false
+            max-jobs = 1
+            cores = 2
+            ${{ runner.os == 'Linux' && matrix.mode == 'cleave' && 'build-dir = /nix/build' || '' }}
+      - name: Measure usable store before compilation
+        run: |
+          nix --version | grep -F 'Determinate Nix 3.24.1'
+          nix store info --store daemon --json
+          python3 ci/hosted-nix-metrics.py ready
+      - name: Compile and execute a native program, then export its closure
+        run: |
+          set -euo pipefail
+          nix build --impure --file ci/hosted-nix-trial.nix --no-link --print-out-paths -L > outputs.txt
+          "$(cat outputs.txt)/bin/hosted-nix-trial"
+          nix-store --query --requisites "$(cat outputs.txt)" > closure.txt
+          closure=()
+          while IFS= read -r path; do closure+=("$path"); done < closure.txt
+          nix-store --export "${closure[@]}" > "$RUNNER_TEMP/native-closure.nar"
+          test -s "$RUNNER_TEMP/native-closure.nar"
+          nix-store --verify-path "$(cat outputs.txt)"
+      - name: Measure final disk headroom
+        if: always()
+        run: python3 ci/hosted-nix-metrics.py after
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: smoke-${{ matrix.runner }}-${{ matrix.mode }}
+          path: |
+            ${{ runner.temp }}/hosted-nix-metrics.json
+            outputs.txt
+          retention-days: 7
+  forks:
+    needs: [plan, smoke]
+    name: Fork trial (${{ matrix.name }}, ${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      TRIAL_MODE: cleave
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.revision }}
+          path: candidate
+          persist-credentials: false
+          submodules: recursive
+      - name: Measure initial disk headroom
+        run: python3 ci/hosted-nix-metrics.py before
+      - name: Reclaim hosted runner space
+        uses: wimpysworld/nothing-but-nix@c42920bb7515b766b1c69f5db46cb13124270f7e
+        with:
+          hatchet-protocol: cleave
+          root-safe-haven: '16384'
+          witness-carnage: true
+      - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3
+        with:
+          source-tag: v3.24.1
+          summarize: false
+          kvm: false
+          extra-conf: |
+            experimental-features = nix-command flakes parallel-eval
+            eval-cores = 2
+            accept-flake-config = false
+            max-jobs = 1
+            cores = 2
+            ${{ runner.os == 'Linux' && 'build-dir = /nix/build' || '' }}
+      - name: Measure usable store before builds
+        run: python3 ci/hosted-nix-metrics.py ready
+      - name: Build packages and run the fork policy checks
+        if: matrix.kind == 'fork'
+        env:
+          TARGET_SYSTEM: ${{ matrix.system }}
+        run: python3 bin/build.py --source candidate --system "$TARGET_SYSTEM" --outputs outputs.txt
+      - name: Build the representative catalog package
+        if: matrix.kind == 'catalog'
+        env:
+          TARGET_SYSTEM: ${{ matrix.system }}
+        run: |
+          set -euo pipefail
+          cd candidate
+          target=".#packages.$TARGET_SYSTEM.atuin"
+          python3 ../ci/public-closure.py "$target"
+          nix build "$target" --no-update-lock-file --no-write-lock-file --no-link --print-out-paths -L > ../outputs.txt
+          git diff --exit-code HEAD --
+      - name: Measure final disk headroom
+        if: always()
+        run: python3 ci/hosted-nix-metrics.py after
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: fork-${{ matrix.name }}-${{ matrix.system }}
+          path: |
+            ${{ runner.temp }}/hosted-nix-metrics.json
+            outputs.txt
+          retention-days: 7
+          if-no-files-found: error

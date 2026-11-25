@@ -1,0 +1,385 @@
+{
+  "observed_on": "2026-11-25",
+  "action_revision": "c42920bb7515b766b1c69f5db46cb13124270f7e",
+  "trials": [
+    {
+      "name": "Handy",
+      "repository": "dweee/Handy",
+      "revision": "f058c4f45ec08cdfbb08582409a72346fe660c5b",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "larperCord",
+      "repository": "dweee/larperCord",
+      "revision": "b621256753bcf785fb5826c10462f51eb1b199a2",
+      "system": "aarch64-linux",
+      "runner": "ubuntu-24.04-arm",
+      "kind": "fork"
+    },
+    {
+      "name": "niks3",
+      "repository": "dweee/niks3",
+      "revision": "9a84a9a4b0903de5dbd71b5de11a8747faf46efc",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "paneru",
+      "repository": "dweee/paneru",
+      "revision": "d7a0167d329b598b65a203351ab0184e92ab7bf0",
+      "system": "aarch64-darwin",
+      "runner": "macos-15",
+      "kind": "fork"
+    },
+    {
+      "name": "pared",
+      "repository": "dweee/pared",
+      "revision": "7b42b38a8338678cd73399a550fc351214a50bec",
+      "system": "aarch64-darwin",
+      "runner": "xcode-27",
+      "kind": "fork"
+    },
+    {
+      "name": "rekordbox-mcp",
+      "repository": "dweee/rekordbox-mcp",
+      "revision": "9e4562e2150048b44f4b2d96d435a2b77f4f01a3",
+      "system": "aarch64-darwin",
+      "runner": "macos-15",
+      "kind": "fork"
+    },
+    {
+      "name": "schildi-revenge",
+      "repository": "dweee/schildi-revenge",
+      "revision": "f79fee114e2fe66dfa180c346f8d1d195f13310b",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "tabrix",
+      "repository": "dweee/tabrix",
+      "revision": "d247b03664254b787a5d478adcf8883da358dac9",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "kopuz",
+      "repository": "dweee/kopuz",
+      "revision": "e659044e412c7f099f96b123da63c819a47b8c47",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "opencode-free-router",
+      "repository": "dweee/opencode-free-router",
+      "revision": "0610f35ad2f398ab8538aaf3a57f1d4cec748c68",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "kuna",
+      "repository": "dweee/kuna",
+      "revision": "ded1b8618f754dcd6e4a6100458f34199a5fcc6d",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "ha-mcp",
+      "repository": "dweee/ha-mcp",
+      "revision": "29092145c8d46ddfb8f7aadd1301e8b6dd32e2dd",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "Patchbay",
+      "repository": "dweee/Patchbay",
+      "revision": "f6f4bd8699f2618ec22ba1a219e5bd469d5471bb",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "codexbar-plasmoid",
+      "repository": "dweee/codexbar-plasmoid",
+      "revision": "44bc2609f3488a8ef21c2b8eaad1ded3759e68bc",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "tuwunel",
+      "repository": "dweee/tuwunel",
+      "revision": "821b68c86bd8767a2d9bc018cf89b95412c00bf3",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "postmerkos-ui",
+      "repository": "dweee/postmerkos-ui",
+      "revision": "39db7742f311a9fce5d9e93779a9a86842811a7d",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "fork"
+    },
+    {
+      "name": "dave-packages",
+      "repository": "dweee/dave-packages",
+      "revision": "114cd054dc698e781194c2683af854533da9a3fc",
+      "system": "x86_64-linux",
+      "runner": "ubuntu-24.04",
+      "kind": "catalog"
+    },
+    {
+      "name": "dave-packages",
+      "repository": "dweee/dave-packages",
+      "revision": "114cd054dc698e781194c2683af854533da9a3fc",
+      "system": "aarch64-linux",
+      "runner": "ubuntu-24.04-arm",
+      "kind": "catalog"
+    }
+  ],
+  "audit": [
+    {
+      "repository": "dweee/Handy",
+      "revision": "f058c4f45ec08cdfbb08582409a72346fe660c5b",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "handy"
+      ],
+      "checks": [],
+      "test_commands": 4,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/larperCord",
+      "revision": "b621256753bcf785fb5826c10462f51eb1b199a2",
+      "status": "trial selected",
+      "system": "aarch64-linux",
+      "packages": [
+        "larpercord"
+      ],
+      "checks": [
+        "screenshot",
+        "home-manager-module",
+        "nixos-module"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/niks3",
+      "revision": "9a84a9a4b0903de5dbd71b5de11a8747faf46efc",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "niks3"
+      ],
+      "checks": [
+        "package-niks3-tests",
+        "version-sync"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/paneru",
+      "revision": "d7a0167d329b598b65a203351ab0184e92ab7bf0",
+      "status": "trial selected",
+      "system": "aarch64-darwin",
+      "packages": [
+        "paneru",
+        "paneru-lua"
+      ],
+      "checks": [
+        "darwin-module"
+      ],
+      "test_commands": 2,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/pared",
+      "revision": "7b42b38a8338678cd73399a550fc351214a50bec",
+      "status": "trial selected",
+      "system": "aarch64-darwin",
+      "packages": [
+        "docs",
+        "docs-json",
+        "profile",
+        "declarations",
+        "pared"
+      ],
+      "checks": [
+        "cleanup"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/rekordbox-mcp",
+      "revision": "9e4562e2150048b44f4b2d96d435a2b77f4f01a3",
+      "status": "trial selected",
+      "system": "aarch64-darwin",
+      "packages": [
+        "rekordbox-mcp"
+      ],
+      "checks": [
+        "rekordbox-mcp"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/schildi-revenge",
+      "revision": "f79fee114e2fe66dfa180c346f8d1d195f13310b",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "schildi-revenge"
+      ],
+      "checks": [
+        "schildi-revenge"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/tabrix",
+      "revision": "d247b03664254b787a5d478adcf8883da358dac9",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "tabrix",
+        "tabrix-extension"
+      ],
+      "checks": [
+        "tabrix",
+        "tabrix-extension"
+      ],
+      "test_commands": 2,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/kopuz",
+      "revision": "e659044e412c7f099f96b123da63c819a47b8c47",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "kopuz"
+      ],
+      "checks": [
+        "qobuz"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/opencode-free-router",
+      "revision": "0610f35ad2f398ab8538aaf3a57f1d4cec748c68",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "sync-source"
+      ],
+      "checks": [],
+      "test_commands": 2,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/kuna",
+      "revision": "ded1b8618f754dcd6e4a6100458f34199a5fcc6d",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "kuna"
+      ],
+      "checks": [
+        "kuna"
+      ],
+      "test_commands": 1,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/ha-mcp",
+      "revision": "29092145c8d46ddfb8f7aadd1301e8b6dd32e2dd",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "sync-source"
+      ],
+      "checks": [],
+      "test_commands": 1,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/Patchbay",
+      "revision": "f6f4bd8699f2618ec22ba1a219e5bd469d5471bb",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "default"
+      ],
+      "checks": [
+        "bitwig-home"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/ghidra-mcp",
+      "revision": "b3bb0355d619e48b6c6c6033527697286645d3a8",
+      "status": "static audit only",
+      "note": "Policy selects retained-java; restoring a retained artifact requires its existing owning cache route. No cache credentials are granted to this trial."
+    },
+    {
+      "repository": "dweee/codexbar-plasmoid",
+      "revision": "44bc2609f3488a8ef21c2b8eaad1ded3759e68bc",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "default"
+      ],
+      "checks": [
+        "plasmoid"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/tuwunel",
+      "revision": "821b68c86bd8767a2d9bc018cf89b95412c00bf3",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "tuwunel-deps",
+        "matrix-tuwunel"
+      ],
+      "checks": [
+        "authenticated-media"
+      ],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    },
+    {
+      "repository": "dweee/postmerkos-ui",
+      "revision": "39db7742f311a9fce5d9e93779a9a86842811a7d",
+      "status": "trial selected",
+      "system": "x86_64-linux",
+      "packages": [
+        "default"
+      ],
+      "checks": [],
+      "test_commands": 0,
+      "note": "One native platform exercises the complete fork policy; other native platforms remain unaudited at runtime."
+    }
+  ]
+}
