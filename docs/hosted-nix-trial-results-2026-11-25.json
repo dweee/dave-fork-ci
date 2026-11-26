@@ -1,0 +1,604 @@
+{
+  "run": "https://github.com/dweee/dave-fork-ci/actions/runs/45695300872",
+  "controller_revision": "efeba95ac937fa7196ce163081af303a0aa4d0ba",
+  "smoke_passed": 6,
+  "fork_catalog_passed": 16,
+  "fork_catalog_failed": 2,
+  "smoke_metrics": [
+    {
+      "job": "smoke-macos-15-cleave",
+      "observations": [
+        {
+          "phase": "before",
+          "time": 1795638667.175853,
+          "elapsed_seconds": 0,
+          "runner_os": "macOS",
+          "runner_arch": "ARM64",
+          "image_os": "macos15",
+          "image_version": "20261123.0558.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 343073095680,
+              "used": 295771926528,
+              "free": 47301169152
+            },
+            "/tmp": {
+              "total": 343073095680,
+              "used": 295771926528,
+              "free": 47301169152
+            },
+            "/Users/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 343073095680,
+              "used": 295771926528,
+              "free": 47301169152
+            }
+          }
+        },
+        {
+          "phase": "ready",
+          "time": 1795638909.538128,
+          "elapsed_seconds": 242.3622748851776,
+          "runner_os": "macOS",
+          "runner_arch": "ARM64",
+          "image_os": "macos15",
+          "image_version": "20261123.0558.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 343073095680,
+              "used": 101551210496,
+              "free": 241521885184
+            },
+            "/nix": {
+              "total": 343073095680,
+              "used": 101551210496,
+              "free": 241521885184
+            },
+            "/tmp": {
+              "total": 343073095680,
+              "used": 101551210496,
+              "free": 241521885184
+            },
+            "/Users/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 343073095680,
+              "used": 101551210496,
+              "free": 241521885184
+            }
+          }
+        },
+        {
+          "phase": "after",
+          "time": 1795638932.230347,
+          "elapsed_seconds": 265.05449390411377,
+          "runner_os": "macOS",
+          "runner_arch": "ARM64",
+          "image_os": "macos15",
+          "image_version": "20261123.0558.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 343073095680,
+              "used": 103363084288,
+              "free": 239710011392
+            },
+            "/nix": {
+              "total": 343073095680,
+              "used": 103363084288,
+              "free": 239710011392
+            },
+            "/tmp": {
+              "total": 343073095680,
+              "used": 103363084288,
+              "free": 239710011392
+            },
+            "/Users/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 343073095680,
+              "used": 103363084288,
+              "free": 239710011392
+            }
+          }
+        }
+      ]
+    },
+    {
+      "job": "smoke-macos-15-current",
+      "observations": [
+        {
+          "phase": "before",
+          "time": 1795638597.228808,
+          "elapsed_seconds": 0,
+          "runner_os": "macOS",
+          "runner_arch": "ARM64",
+          "image_os": "macos15",
+          "image_version": "20261118.0550.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 343073095680,
+              "used": 295443222528,
+              "free": 47629873152
+            },
+            "/tmp": {
+              "total": 343073095680,
+              "used": 295443222528,
+              "free": 47629873152
+            },
+            "/Users/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 343073095680,
+              "used": 295443222528,
+              "free": 47629873152
+            }
+          }
+        },
+        {
+          "phase": "ready",
+          "time": 1795638664.154706,
+          "elapsed_seconds": 66.92589807510376,
+          "runner_os": "macOS",
+          "runner_arch": "ARM64",
+          "image_os": "macos15",
+          "image_version": "20261118.0550.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 343073095680,
+              "used": 295853424640,
+              "free": 47219671040
+            },
+            "/nix": {
+              "total": 343073095680,
+              "used": 295853424640,
+              "free": 47219671040
+            },
+            "/tmp": {
+              "total": 343073095680,
+              "used": 295853424640,
+              "free": 47219671040
+            },
+            "/Users/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 343073095680,
+              "used": 295853424640,
+              "free": 47219671040
+            }
+          }
+        },
+        {
+          "phase": "after",
+          "time": 1795638710.586715,
+          "elapsed_seconds": 113.35790705680847,
+          "runner_os": "macOS",
+          "runner_arch": "ARM64",
+          "image_os": "macos15",
+          "image_version": "20261118.0550.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 343073095680,
+              "used": 297678045184,
+              "free": 45395050496
+            },
+            "/nix": {
+              "total": 343073095680,
+              "used": 297678045184,
+              "free": 45395050496
+            },
+            "/tmp": {
+              "total": 343073095680,
+              "used": 297678045184,
+              "free": 45395050496
+            },
+            "/Users/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 343073095680,
+              "used": 297678045184,
+              "free": 45395050496
+            }
+          }
+        }
+      ]
+    },
+    {
+      "job": "smoke-ubuntu-24.04-arm-cleave",
+      "observations": [
+        {
+          "phase": "before",
+          "time": 1795638573.7571096,
+          "elapsed_seconds": 0,
+          "runner_os": "Linux",
+          "runner_arch": "ARM64",
+          "image_os": "ubuntu24-arm64",
+          "image_version": "20261122.193.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 41330016256,
+              "free": 113547395072
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 41330016256,
+              "free": 113547395072
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 41330016256,
+              "free": 113547395072
+            }
+          }
+        },
+        {
+          "phase": "ready",
+          "time": 1795638652.3548338,
+          "elapsed_seconds": 78.59772419929504,
+          "runner_os": "Linux",
+          "runner_arch": "ARM64",
+          "image_os": "ubuntu24-arm64",
+          "image_version": "20261122.193.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 137803943936,
+              "free": 17073467392
+            },
+            "/nix": {
+              "total": 120124866560,
+              "used": 15384576,
+              "free": 120100749312
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 137803943936,
+              "free": 17073467392
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 137803943936,
+              "free": 17073467392
+            }
+          }
+        },
+        {
+          "phase": "after",
+          "time": 1795638661.8486366,
+          "elapsed_seconds": 88.09152698516846,
+          "runner_os": "Linux",
+          "runner_arch": "ARM64",
+          "image_os": "ubuntu24-arm64",
+          "image_version": "20261122.193.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 137866665984,
+              "free": 17010745344
+            },
+            "/nix": {
+              "total": 120124866560,
+              "used": 292827136,
+              "free": 118832959488
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 137866665984,
+              "free": 17010745344
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 137866665984,
+              "free": 17010745344
+            }
+          }
+        }
+      ]
+    },
+    {
+      "job": "smoke-ubuntu-24.04-arm-current",
+      "observations": [
+        {
+          "phase": "before",
+          "time": 1795638520.5014718,
+          "elapsed_seconds": 0,
+          "runner_os": "Linux",
+          "runner_arch": "ARM64",
+          "image_os": "ubuntu24-arm64",
+          "image_version": "20261116.188.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 41068789760,
+              "free": 113808621568
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 41068789760,
+              "free": 113808621568
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 41068789760,
+              "free": 113808621568
+            }
+          }
+        },
+        {
+          "phase": "ready",
+          "time": 1795638551.3198125,
+          "elapsed_seconds": 30.81834077835083,
+          "runner_os": "Linux",
+          "runner_arch": "ARM64",
+          "image_os": "ubuntu24-arm64",
+          "image_version": "20261116.188.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 34415423488,
+              "free": 120461987840
+            },
+            "/nix": {
+              "total": 154894188544,
+              "used": 34415423488,
+              "free": 120461987840
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 34415423488,
+              "free": 120461987840
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 34415423488,
+              "free": 120461987840
+            }
+          }
+        },
+        {
+          "phase": "after",
+          "time": 1795638560.5610144,
+          "elapsed_seconds": 40.059542655944824,
+          "runner_os": "Linux",
+          "runner_arch": "ARM64",
+          "image_os": "ubuntu24-arm64",
+          "image_version": "20261116.188.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 35448467456,
+              "free": 119428943872
+            },
+            "/nix": {
+              "total": 154894188544,
+              "used": 35448467456,
+              "free": 119428943872
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 35448467456,
+              "free": 119428943872
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 35448467456,
+              "free": 119428943872
+            }
+          }
+        }
+      ]
+    },
+    {
+      "job": "smoke-ubuntu-24.04-cleave",
+      "observations": [
+        {
+          "phase": "before",
+          "time": 1795638520.0927663,
+          "elapsed_seconds": 0,
+          "runner_os": "Linux",
+          "runner_arch": "X64",
+          "image_os": "ubuntu24",
+          "image_version": "20261116.133.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 59999637504,
+              "free": 94877773824
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 59999637504,
+              "free": 94877773824
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 59999637504,
+              "free": 94877773824
+            }
+          }
+        },
+        {
+          "phase": "ready",
+          "time": 1795638577.1632862,
+          "elapsed_seconds": 57.07051992416382,
+          "runner_os": "Linux",
+          "runner_arch": "X64",
+          "image_os": "ubuntu24",
+          "image_version": "20261116.133.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 137808928768,
+              "free": 17068482560
+            },
+            "/nix": {
+              "total": 122299613184,
+              "used": 15384576,
+              "free": 122275495936
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 137808928768,
+              "free": 17068482560
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 137808928768,
+              "free": 17068482560
+            }
+          }
+        },
+        {
+          "phase": "after",
+          "time": 1795638583.6105177,
+          "elapsed_seconds": 63.51775145530701,
+          "runner_os": "Linux",
+          "runner_arch": "X64",
+          "image_os": "ubuntu24",
+          "image_version": "20261116.133.1",
+          "mode": "cleave",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 137861476352,
+              "free": 17015934976
+            },
+            "/nix": {
+              "total": 122299613184,
+              "used": 269213696,
+              "free": 121032040448
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 137861476352,
+              "free": 17015934976
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 137861476352,
+              "free": 17015934976
+            }
+          }
+        }
+      ]
+    },
+    {
+      "job": "smoke-ubuntu-24.04-current",
+      "observations": [
+        {
+          "phase": "before",
+          "time": 1795638523.1947074,
+          "elapsed_seconds": 0,
+          "runner_os": "Linux",
+          "runner_arch": "X64",
+          "image_os": "ubuntu24",
+          "image_version": "20261116.133.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 59999653888,
+              "free": 94877757440
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 59999653888,
+              "free": 94877757440
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 59999653888,
+              "free": 94877757440
+            }
+          }
+        },
+        {
+          "phase": "ready",
+          "time": 1795638651.775265,
+          "elapsed_seconds": 128.58055758476257,
+          "runner_os": "Linux",
+          "runner_arch": "X64",
+          "image_os": "ubuntu24",
+          "image_version": "20261116.133.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 41768087552,
+              "free": 113109323776
+            },
+            "/nix": {
+              "total": 154894188544,
+              "used": 41768087552,
+              "free": 113109323776
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 41768087552,
+              "free": 113109323776
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 41768087552,
+              "free": 113109323776
+            }
+          }
+        },
+        {
+          "phase": "after",
+          "time": 1795638657.0840714,
+          "elapsed_seconds": 133.88936400413513,
+          "runner_os": "Linux",
+          "runner_arch": "X64",
+          "image_os": "ubuntu24",
+          "image_version": "20261116.133.1",
+          "mode": "current",
+          "disks": {
+            "/": {
+              "total": 154894188544,
+              "used": 42787667968,
+              "free": 112089743360
+            },
+            "/nix": {
+              "total": 154894188544,
+              "used": 42787667968,
+              "free": 112089743360
+            },
+            "/tmp": {
+              "total": 154894188544,
+              "used": 42787667968,
+              "free": 112089743360
+            },
+            "/home/runner/work/dave-fork-ci/dave-fork-ci": {
+              "total": 154894188544,
+              "used": 42787667968,
+              "free": 112089743360
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "failure_followups": [
+    {
+      "repository": "dweee/paneru",
+      "job": "https://github.com/dweee/dave-fork-ci/actions/runs/45695300872/job/139494934584",
+      "failure": "cargo clippy --all-targets: E0433, undeclared Operation and Direction in src/platform/input.rs:1415",
+      "baseline": "pending, same commit without cleave"
+    },
+    {
+      "repository": "dweee/tuwunel",
+      "job": "https://github.com/dweee/dave-fork-ci/actions/runs/45695300872/job/139494937319",
+      "failure": "integrity::tests::mappings::joined_members_read_an_outlier_copy_found_before_a_damaged_mapping: one failed, 766 passed",
+      "baseline": "pending, same commit without cleave"
+    }
+  ],
+  "qualifications": [
+    "Only the x86 Linux baseline and cleave smoke jobs have identical runner image versions. ARM Linux and macOS figures are exploratory observations, not controlled performance comparisons.",
+    "Linux cleave reserves 16 GiB outside /nix; baseline uses the existing manual SDK deletion.",
+    "Successful smoke compilation and export do not establish full production publisher or peak-disk qualification."
+  ]
+}
