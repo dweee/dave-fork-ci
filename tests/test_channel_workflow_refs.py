@@ -21,6 +21,29 @@ def matches(expression, event, ref):
 
 
 class ChannelWorkflowRefs(unittest.TestCase):
+    def test_cleanup_only_prepares_hosted_native_builds(self):
+        systems = ('x86_64-linux', 'aarch64-linux', 'aarch64-darwin', 'x86_64-darwin')
+        for forge in ('github', 'forgejo'):
+            with tempfile.TemporaryDirectory() as directory:
+                workflows = self.generated(forge, directory, systems)
+            for workflow_name, workflow in workflows.items():
+                for name, job in workflow['jobs'].items():
+                    steps = job['steps']
+                    cleanup = [s for s in steps if s.get('uses') == installer.HOSTED_CLEANUP]
+                    expected = forge == 'github' and workflow_name == 'release-channels' and name.startswith('build_')
+                    self.assertEqual(bool(cleanup), expected, (forge, workflow_name, name))
+                    if not expected:
+                        self.assertNotIn('build-dir = /nix/build', str(steps))
+                        continue
+                    first_install = next(i for i, step in enumerate(steps)
+                                         if step.get('uses') == installer.INSTALL)
+                    self.assertLess(steps.index(cleanup[0]), first_install)
+                    self.assertEqual(cleanup[0]['with']['hatchet-protocol'], 'cleave')
+                    self.assertIn('16384', cleanup[0]['with']['root-safe-haven'])
+                    self.assertIn("runner.arch == 'X64'", cleanup[0]['if'])
+                    conf = steps[first_install]['with']['extra-conf']
+                    self.assertEqual('build-dir = /nix/build' in conf, name.endswith('_linux'))
+
     def generated(self, forge, directory, systems=('x86_64-linux',), extra=None):
         root = Path(directory)
         (root / 'flake.nix').touch()

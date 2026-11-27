@@ -1,0 +1,79 @@
+name: Hosted Nix failure baselines
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: hosted-nix-baseline-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  baseline:
+    name: No-cleanup baseline (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: paneru
+            repository: dweee/paneru
+            revision: d7a0167d329b598b65a203351ab0184e92ab7bf0
+            system: aarch64-darwin
+            runner: macos-15
+          - name: tuwunel
+            repository: dweee/tuwunel
+            revision: 821b68c86bd8767a2d9bc018cf89b95412c00bf3
+            system: x86_64-linux
+            runner: ubuntu-24.04
+    env:
+      TRIAL_MODE: current
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.revision }}
+          path: candidate
+          persist-credentials: false
+          submodules: recursive
+      - name: Measure initial disk headroom
+        run: python3 ci/hosted-nix-metrics.py before
+      - name: Existing Linux SDK cleanup baseline
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+      - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3
+        with:
+          source-tag: v3.24.1
+          summarize: false
+          kvm: false
+          extra-conf: |
+            experimental-features = nix-command flakes parallel-eval
+            eval-cores = 2
+            accept-flake-config = false
+            max-jobs = 1
+            cores = 2
+            log-lines = 200
+      - name: Measure usable store before builds
+        run: python3 ci/hosted-nix-metrics.py ready
+      - name: Run the same fork packages, checks and tests without cleave
+        env:
+          TARGET_SYSTEM: ${{ matrix.system }}
+        run: |
+          set -euo pipefail
+          python3 bin/build.py --source candidate --system "$TARGET_SYSTEM" --outputs outputs.txt 2>&1 | tee "$RUNNER_TEMP/fork-build.log"
+      - name: Measure final disk headroom
+        if: always()
+        run: python3 ci/hosted-nix-metrics.py after
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: baseline-${{ matrix.name }}-${{ matrix.system }}
+          path: |
+            ${{ runner.temp }}/hosted-nix-metrics.json
+            ${{ runner.temp }}/fork-build.log
+            outputs.txt
+          retention-days: 7
+          if-no-files-found: error

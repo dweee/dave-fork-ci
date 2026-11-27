@@ -101,6 +101,13 @@ jobs:
           persist-credentials: false
           submodules: recursive
           fetch-depth: 0
+      - name: Reclaim hosted runner space for Nix
+        if: runner.os == 'Linux' || runner.arch == 'ARM64'
+        uses: wimpysworld/nothing-but-nix@c42920bb7515b766b1c69f5db46cb13124270f7e
+        with:
+          hatchet-protocol: cleave
+          root-safe-haven: ${{ runner.os == 'Linux' && '16384' || 'auto' }}
+          witness-carnage: true
       - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3 # v3
         with:
           source-tag: v3.24.1
@@ -110,6 +117,7 @@ jobs:
             experimental-features = nix-command flakes parallel-eval
             eval-cores = 2
             accept-flake-config = false
+            ${{ runner.os == 'Linux' && 'build-dir = /nix/build' || '' }}
       - name: Configure common public caches
         run: |
           echo "NIX_CONFIG<<FLAKEY_CACHE_CONFIG" >> "$GITHUB_ENV"
