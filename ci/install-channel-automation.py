@@ -21,6 +21,7 @@ def multiline(dumper, value):
 HERE = Path(__file__).resolve().parent
 CHECKOUT = 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
 INSTALL = 'DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3'
+HOSTED_CLEANUP = 'wimpysworld/nothing-but-nix@c42920bb7515b766b1c69f5db46cb13124270f7e'
 INTEL_DARWIN_INSTALL = 'nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c'
 # Paths that cannot change a built package. A repository that sets
 # githubCounterpartCi must still confirm none of these feed its build.
@@ -233,7 +234,7 @@ def install(args):
                         'git init -q .\ngit remote add origin "$SERVER/$REPO.git"\n'
                         'git -c http.extraHeader="Authorization: Basic $auth" fetch -q origin "$SHA"\n'
                         'git checkout -q --detach FETCH_HEAD\n'}]
-    def bootstrap(cores=1, runner=None):
+    def bootstrap(cores=1, runner=None, cleanup=False):
         if not github:
             if shared:
                 if runner not in ICICLE_LABELS:
@@ -252,7 +253,16 @@ def install(args):
 
         intel = "runner.os == 'macOS' && runner.arch == 'X64'"
         common = 'accept-flake-config = false\nmax-jobs = 1\ncores = '+str(cores)+'\n' + CACHE_CONF
-        return [
+        cleanup_steps = []
+        if cleanup:
+            cleanup_steps = [{'name': 'Reclaim hosted runner space for Nix', 'uses': HOSTED_CLEANUP,
+                              'if': expr('!('+intel+')'),
+                              'with': {'hatchet-protocol': 'cleave',
+                                       'root-safe-haven': expr("runner.os == 'Linux' && '16384' || 'auto'"),
+                                       'witness-carnage': True}}]
+            if runner and runner.startswith('ubuntu-'):
+                common += 'build-dir = /nix/build\n'
+        return cleanup_steps + [
             {'uses': INSTALL, 'if': expr('!('+intel+')'),
              'with': {'source-tag': 'v3.24.1', 'summarize': False, 'kvm': False,
                       'extra-conf': 'experimental-features = nix-command flakes parallel-eval\n'
@@ -334,7 +344,7 @@ def install(args):
             # Linux builders to use every CPU assigned to their runners. The
             # macOS runners have 7 GB for 3 cores, so they stay at one core.
             native['steps'] = checkout(expr('needs.test.outputs.revision'))+bootstrap(
-                cores=0 if system in {'x86_64-linux', 'aarch64-linux'} else 1, runner=native['runs-on'])+[
+                cores=0 if system in {'x86_64-linux', 'aarch64-linux'} else 1, runner=native['runs-on'], cleanup=True)+[
                 # GitHub reads and publishes through OIDC; Forgejo uses the
                 # repository-scoped Niks3 netrc and write token.
                 {'name': 'Configure job-local private cache reader',

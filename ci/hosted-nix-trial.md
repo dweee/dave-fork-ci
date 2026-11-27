@@ -1,9 +1,12 @@
 # Hosted Nix cleanup trial
 
-This is an opt-in evaluation of `nothing-but-nix`'s `cleave` profile on disposable
-GitHub-hosted runners. The production upstream-sync workflow, channel generator
-and pinned consumer callers are unchanged. Nothing runs on persistent or Forgejo
-runners, and the trial neither publishes caches nor promotes a branch/channel.
+This records the initial opt-in evaluation of `nothing-but-nix`'s `cleave` profile
+on disposable GitHub-hosted runners. During that experiment the production
+upstream-sync workflow, channel generator and consumer callers were unchanged.
+The subsequent rollout adds cleanup to hosted native build jobs only; see the
+README for its boundaries. The experiment workflows are manual-only. Nothing
+runs on persistent or Forgejo runners, and the trial neither publishes caches
+nor promotes a branch/channel.
 
 The smoke matrix compares the current manual Linux SDK cleanup (and unchanged
 macOS image) with `cleave` on Ubuntu x86, Ubuntu ARM and Apple silicon macOS.

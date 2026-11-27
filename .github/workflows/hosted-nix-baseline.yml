@@ -1,8 +1,5 @@
 name: Hosted Nix failure baselines
 on:
-  pull_request:
-    paths:
-      - .github/workflows/hosted-nix-baseline.yml
   workflow_dispatch:
 permissions:
   contents: read

@@ -11,6 +11,14 @@ The composite [action.yml](action.yml) handles Git preparation/promotion without
 
 ## Behavior
 
+Hosted native builds use commit-pinned `nothing-but-nix` with `cleave` before
+installing Nix. Linux reserves 16 GiB outside `/nix` for closure exports and
+artifact staging and builds in `/nix/build`. Apple silicon macOS keeps its normal
+APFS store, build directory and default Xcode. Intel macOS skips cleanup.
+Generated channel workflows apply cleanup only to native build jobs; planning,
+retention, promotion, publishers and persistent Forgejo runners keep their
+existing setup. The two hosted cleanup experiment workflows are manual-only.
+
 1. Poll the configured public upstream branch, latest stable GitHub release, or both. A six-hour caller schedule works without upstream cooperation; an optional `repository_dispatch` can wake it sooner. A release in somebody else's repository does not directly trigger your fork's workflow. Drafts and prereleases are excluded.
 2. Three-way merge the resolved upstream commits into the fork default branch in a scratch clone. Preserve fork commits and ancestry; never reset/rebase away local patches. Keep the fork's control and protected paths, including when upstream only conflicts there. Record resolved branch/release SHAs and publish an immutable `sync/upstream/<commit>` branch.
 3. Scan incoming Git history with trusted Gitleaks rules. Reject on-prem-only derivations before building. Then build selected packages/checks on each configured native platform and run configured argument-vector test commands. Package builds do not receive Git write or cache publication credentials. An unchanged upstream/release state uses no macOS build job.

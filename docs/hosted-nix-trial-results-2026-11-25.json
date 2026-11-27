@@ -587,13 +587,19 @@
       "repository": "dweee/paneru",
       "job": "https://github.com/dweee/dave-fork-ci/actions/runs/45695300872/job/139494934584",
       "failure": "cargo clippy --all-targets: E0433, undeclared Operation and Direction in src/platform/input.rs:1415",
-      "baseline": "pending, same commit without cleave"
+      "baseline": "same E0433 missing Operation and Direction errors reproduced without cleave",
+      "baseline_job": "https://github.com/dweee/dave-fork-ci/actions/runs/45739656563/job/139641228521",
+      "repeat_cleave": "same source compilation failure",
+      "repeat_cleave_job": "https://github.com/dweee/dave-fork-ci/actions/runs/45695300872/job/139641679205"
     },
     {
       "repository": "dweee/tuwunel",
       "job": "https://github.com/dweee/dave-fork-ci/actions/runs/45695300872/job/139494937319",
       "failure": "integrity::tests::mappings::joined_members_read_an_outlier_copy_found_before_a_damaged_mapping: one failed, 766 passed",
-      "baseline": "pending, same commit without cleave"
+      "baseline": "passed without cleave",
+      "baseline_job": "https://github.com/dweee/dave-fork-ci/actions/runs/45739656563/job/139641228950",
+      "repeat_cleave": "passed with cleave",
+      "repeat_cleave_job": "https://github.com/dweee/dave-fork-ci/actions/runs/45695300872/job/139641679157"
     }
   ],
   "qualifications": [

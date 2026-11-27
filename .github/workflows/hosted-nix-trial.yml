@@ -1,9 +1,5 @@
 name: Hosted Nix cleanup trial
 on:
-  pull_request:
-    paths:
-      - .github/workflows/hosted-nix-trial.yml
-      - ci/hosted-nix-*
   workflow_dispatch:
 permissions:
   contents: read
